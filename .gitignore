@@ -135,3 +135,5 @@ dmypy.json
 .DS_Store
 model/__init__.py
 hand_landmarker.task
+model/__init__.py
+integrations/__init__.py
