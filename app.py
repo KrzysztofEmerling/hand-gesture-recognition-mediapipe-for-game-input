@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import csv
 import copy
+import csv
 import argparse
-import itertools
 import os
 import time
 
@@ -14,58 +13,24 @@ from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
 from utils import CvFpsCalc
-from model import KeyPointClassifier
+from model import (
+    DEFAULT_HEIGHT_DIFF_THRESHOLD,
+    LANDMARKS_PER_HAND,
+    NUM_FEATURES,
+    NUM_HANDS,
+    HandSample,
+    TwoHandGestureClassifier,
+    load_keypoint_classifier,
+    load_labels,
+)
 
 try:
     import pygame
 except ImportError:
     pygame = None
 
-# Gamepad buttons (SDL/Xbox mapping): LB=4, RB=5
+# Przyyciski gamepada LB=4, RB=5
 BUMPER_BUTTONS = (4, 5)
-
-# One gesture sample = graphs of BOTH hands stored in a single class row
-NUM_HANDS = 2
-LANDMARKS_PER_HAND = 21
-FEATURES_PER_HAND = LANDMARKS_PER_HAND * 2  # 21 landmarks x (x, y)
-NUM_FEATURES = NUM_HANDS * FEATURES_PER_HAND  # 84
-
-
-class KerasKeyPointClassifier(object):
-    """Keypoint classifier backed by a full Keras model (.keras / .h5)."""
-
-    def __init__(self, model_path):
-        import tensorflow as tf
-
-        self.model = tf.keras.models.load_model(model_path)
-
-        input_shape = self.model.input_shape
-        if len(input_shape) != 2 or input_shape[-1] != NUM_FEATURES:
-            raise ValueError(
-                "Unexpected input shape {} for the keypoint classifier "
-                "(expected (None, {}) = {} hands x {} landmarks x 2).".format(
-                    input_shape, NUM_FEATURES, NUM_HANDS, LANDMARKS_PER_HAND))
-
-    def __call__(self, landmark_list):
-        x = np.array([landmark_list], dtype=np.float32)
-        scores = self.model(x, training=False)
-        return int(np.argmax(np.squeeze(scores.numpy())))
-
-
-def load_keypoint_classifier(model_path):
-    """Load the gesture classifier; .keras/.h5 use Keras, others use TFLite."""
-    if model_path.lower().endswith(('.keras', '.h5', '.hdf5')):
-        return KerasKeyPointClassifier(model_path)
-
-    classifier = KeyPointClassifier(model_path=model_path)
-    input_shape = classifier.input_details[0]['shape']
-    if int(input_shape[-1]) != NUM_FEATURES:
-        raise ValueError(
-            "Keypoint classifier {} expects {} features, but the model was "
-            "built for {} (retrain it with keypoint_classification_EN.ipynb "
-            "on two-hand data).".format(
-                model_path, NUM_FEATURES, int(input_shape[-1])))
-    return classifier
 
 
 def get_args():
@@ -102,7 +67,7 @@ def get_args():
                              'two hands; a smaller difference forces the '
                              'gesture to inactive (0 = disabled)',
                         type=int,
-                        default=100)
+                        default=DEFAULT_HEIGHT_DIFF_THRESHOLD)
     parser.add_argument("--min_tracking_confidence",
                         help='min_tracking_confidence',
                         type=float,
@@ -156,6 +121,19 @@ def main():
     hand_landmarker = vision.HandLandmarker.create_from_options(
         hand_landmarker_options)
 
+    # Read labels ###########################################################
+    try:
+        keypoint_classifier_labels = load_labels(labels_path)
+    except (OSError, ValueError) as error:
+        raise SystemExit(str(error))
+
+    # Gesture classes are numbered 1..N (0 = not chosen yet)
+    num_categories = len(keypoint_classifier_labels)
+    inactive_label = ('inactive'
+                      if 'inactive' in keypoint_classifier_labels
+                      else keypoint_classifier_labels[-1])
+
+    # Classifier + two-hand threshold #######################################
     if use_classifier:
         if not os.path.isfile(classifier_path):
             raise SystemExit(
@@ -170,21 +148,12 @@ def main():
         print("--no_classification: running WITHOUT the keypoint "
               "classifier (detection + recording only).")
 
-    # Read labels ###########################################################
-    with open(labels_path, encoding='utf-8-sig') as f:
-        keypoint_classifier_labels = [
-            row[0] for row in csv.reader(f) if row
-        ]
-
-    # Gesture classes are numbered 1..N (0 = not chosen yet)
-    num_categories = len(keypoint_classifier_labels)
-    if num_categories < 1:
-        raise SystemExit("No labels found in {}".format(labels_path))
-
-    # Label used whenever fewer than two hands are visible
-    inactive_label = ('inactive'
-                      if 'inactive' in keypoint_classifier_labels
-                      else keypoint_classifier_labels[-1])
+    gesture_classifier = TwoHandGestureClassifier(
+        classifier=keypoint_classifier,
+        labels=keypoint_classifier_labels,
+        inactive_label=inactive_label,
+        height_diff_threshold=height_diff_threshold,
+    )
 
     # FPS Measurement ########################################################
     cvFpsCalc = CvFpsCalc(buffer_len=10)
@@ -276,54 +245,25 @@ def main():
         if results.hand_landmarks:
             for hand_landmarks, handedness in zip(results.hand_landmarks,
                                                   results.handedness):
-                # Bounding box calculation
                 brect = calc_bounding_rect(debug_image, hand_landmarks)
-                # Landmark calculation
-                landmark_list = calc_landmark_list(debug_image, hand_landmarks)
+                hands.append(HandSample.from_mediapipe(
+                    hand_landmarks,
+                    handedness[0].category_name,
+                    debug_image.shape[1],
+                    debug_image.shape[0],
+                    brect=brect,
+                ))
+        prediction = gesture_classifier.classify(hands)
 
-                # Conversion to relative coordinates / normalized coordinates
-                pre_processed_landmark_list = pre_process_landmark(
-                    landmark_list)
-
-                hands.append({
-                    'handedness': handedness[0].category_name,
-                    'brect': brect,
-                    'landmark_list': landmark_list,
-                    'pre_processed': pre_processed_landmark_list,
-                    # Vertical position of the hand (mean y of landmarks)
-                    'height': sum(p[1] for p in landmark_list)
-                              / len(landmark_list),
-                })
-
-        # Deterministic hand order: "Left" before "Right" (alphabetical),
-        # ties broken by wrist x so the feature vector never swaps places.
-        hands.sort(key=lambda hand: (
-            hand['handedness'],
-            hand['landmark_list'][0][0],
-        ))
-
-        # Two hand graphs concatenated into a single class sample
-        combined_landmark_list = []
-        for hand in hands[:NUM_HANDS]:
-            combined_landmark_list.extend(hand['pre_processed'])
-
-        both_hands_visible = len(hands) >= NUM_HANDS
-
-        # Vertical distance between BOTH hands (px, mean landmark y).
-        # A bigger difference than the threshold -> gesture forced inactive.
-        if both_hands_visible:
-            height_diff = abs(hands[0]['height'] - hands[1]['height'])
-            hands_at_same_height = height_diff >= height_diff_threshold
-        else:
-            height_diff = 0.0
-            hands_at_same_height = False
+        both_hands_visible = prediction.both_hands_visible
+        hand_sign_text = prediction.label
 
         # Write to the dataset file
         # One frame per bumper press, class id = category - 1 (0-4)
         # Requires BOTH hands so every row keeps the same 84-feature shape.
         if capture_pending and mode == 1 and 1 <= category <= num_categories:
-            if both_hands_visible:
-                logging_csv(category - 1, combined_landmark_list)
+            if both_hands_visible and len(prediction.features) == NUM_FEATURES:
+                logging_csv(category - 1, prediction.features)
                 capture_pending = False
                 captured_count += 1
                 capture_flash_until = time.monotonic() + 0.6
@@ -332,32 +272,18 @@ def main():
             else:
                 capture_missing_hand_until = time.monotonic() + 0.6
 
-        # Hand sign classification (needs both hand graphs at similar height)
-        if not use_classifier:
-            hand_sign_text = inactive_label if not both_hands_visible \
-                else 'classification off'
-        elif both_hands_visible and hands_at_same_height:
-            hand_sign_id = int(keypoint_classifier(combined_landmark_list))
-            hand_sign_text = (
-                keypoint_classifier_labels[hand_sign_id]
-                if hand_sign_id < len(keypoint_classifier_labels)
-                else str(hand_sign_id))
-        else:
-            # Not enough hands, or hands too far apart vertically
-            # -> inactive (no real classification)
-            hand_sign_text = inactive_label
-
         # Drawing part
         for hand in hands:
             debug_image = draw_bounding_rect(use_brect, debug_image,
-                                             hand['brect'])
-            debug_image = draw_landmarks(debug_image, hand['landmark_list'])
+                                             hand.brect)
+            debug_image = draw_landmarks(debug_image, hand.landmark_list)
             debug_image = draw_info_text(
                 debug_image,
-                hand['brect'],
-                hand['handedness'],
+                hand.brect,
+                hand.handedness,
                 hand_sign_text
-                if both_hands_visible and use_classifier else '',
+                if prediction.classified
+                and prediction.height_threshold_met else '',
             )
 
         debug_image = draw_info(debug_image, fps, mode, number, category,
@@ -368,11 +294,11 @@ def main():
                                 time.monotonic() < capture_missing_hand_until,
                                 both_hands_visible,
                                 keypoint_classifier_labels,
-                                hand_heights=[hand['height'] for hand in
+                                hand_heights=[hand.height for hand in
                                               hands[:NUM_HANDS]],
-                                height_diff=height_diff,
-                                height_threshold=height_diff_threshold,
-                                hands_at_same_height=hands_at_same_height)
+                                height_diff=prediction.height_diff,
+                                height_threshold=prediction.height_diff_threshold,
+                                height_threshold_met=prediction.height_threshold_met)
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -413,48 +339,6 @@ def calc_bounding_rect(image, landmarks):
     x, y, w, h = cv.boundingRect(landmark_array)
 
     return [x, y, x + w, y + h]
-
-
-def calc_landmark_list(image, landmarks):
-    image_width, image_height = image.shape[1], image.shape[0]
-
-    landmark_point = []
-
-    # Keypoint
-    for _, landmark in enumerate(landmarks):
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-
-        landmark_point.append([landmark_x, landmark_y])
-
-    return landmark_point
-
-
-def pre_process_landmark(landmark_list):
-    temp_landmark_list = copy.deepcopy(landmark_list)
-
-    # Convert to relative coordinates
-    base_x, base_y = 0, 0
-    for index, landmark_point in enumerate(temp_landmark_list):
-        if index == 0:
-            base_x, base_y = landmark_point[0], landmark_point[1]
-
-        temp_landmark_list[index][0] = temp_landmark_list[index][0] - base_x
-        temp_landmark_list[index][1] = temp_landmark_list[index][1] - base_y
-
-    # Convert to a one-dimensional list
-    temp_landmark_list = list(
-        itertools.chain.from_iterable(temp_landmark_list))
-
-    # Normalization
-    max_value = max(list(map(abs, temp_landmark_list)))
-
-    def normalize_(n):
-        return n / max_value
-
-    temp_landmark_list = list(map(normalize_, temp_landmark_list))
-
-    return temp_landmark_list
 
 
 def logging_csv(category, landmark_list):
@@ -604,7 +488,7 @@ def draw_info_text(image, brect, handedness_label, hand_sign_text):
 def draw_info(image, fps, mode, number, category, captured_count, just_saved,
               capture_pending, gesture_text, missing_hand, both_hands_visible,
               category_labels=None, hand_heights=None, height_diff=0.0,
-              height_threshold=0, hands_at_same_height=True):
+              height_threshold=0, height_threshold_met=True):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
@@ -646,7 +530,7 @@ def draw_info(image, fps, mode, number, category, captured_count, just_saved,
                 height_text += "/{}".format(height_threshold)
         cv.putText(image, height_text, (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.6,
                    (0, 0, 0), 4, cv.LINE_AA)
-        same_height = (not both_hands_visible) or hands_at_same_height
+        same_height = (not both_hands_visible) or height_threshold_met
         cv.putText(image, height_text, (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.6,
                    (255, 255, 255) if same_height else (0, 165, 255), 1,
                    cv.LINE_AA)
@@ -656,7 +540,7 @@ def draw_info(image, fps, mode, number, category, captured_count, just_saved,
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
                (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
-               (0, 255, 0) if both_hands_visible and hands_at_same_height
+               (0, 255, 0) if both_hands_visible and height_threshold_met
                else (0, 165, 255), 2,
                cv.LINE_AA)
 
