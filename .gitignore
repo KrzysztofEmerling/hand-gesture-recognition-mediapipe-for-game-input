@@ -133,3 +133,5 @@ dmypy.json
 .idea/
 
 .DS_Store
+model/__init__.py
+hand_landmarker.task
