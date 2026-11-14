@@ -57,6 +57,35 @@ DEFAULT_CLASSIFIER_PATH = (PROJECT_ROOT / "model" / "keypoint_classifier"
 DEFAULT_LABELS_PATH = (PROJECT_ROOT / "model" / "keypoint_classifier"
                        / "keypoint_classifier_label.csv")
 
+
+
+def resolve_path(path) -> Path:
+    """Zamienia ścieżkę na absolutną, niezależnie od katalogu startowego.
+
+    Ścieżka bezwzględna zostaje bez zmian. Względna jest szukana najpierw
+    względem bieżącego katalogu, a jeśli tam nie istnieje - względem
+    katalogu głównego projektu (PROJECT_ROOT). Dzięki temu można podać
+    ``model/hand_landmarker.task`` zarówno z korzenia projektu, jak i
+    z folderu ``integrations/`` (np. z notebooka).
+    """
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+
+    candidates = (Path.cwd() / path, PROJECT_ROOT / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return (PROJECT_ROOT / path).resolve()
+
+
+def require_file(path, what: str) -> Path:
+    resolved = resolve_path(path)
+    if not resolved.is_file():
+        raise SystemExit("Nie znaleziono pliku ({}): {}".format(what, resolved))
+    return resolved
+
+
 DEFAULT_UNITY_HOST = "127.0.0.1"
 DEFAULT_UNITY_PORT = 5555
 
@@ -74,6 +103,10 @@ class GesturePipeline:
         min_tracking_confidence=0.5,
         num_hands=NUM_HANDS,
     ) -> None:
+        model_path = require_file(model_path, "model dłoni")
+        classifier_path = require_file(classifier_path, "klasyfikator")
+        labels_path = require_file(labels_path, "etykiety")
+
         self.labels = load_labels(labels_path)
         self.inactive_label = (
             INACTIVE_GESTURE_LABEL

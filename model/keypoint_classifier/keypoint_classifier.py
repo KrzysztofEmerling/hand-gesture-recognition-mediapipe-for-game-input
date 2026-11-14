@@ -27,7 +27,7 @@ NUM_FEATURES = NUM_HANDS * FEATURES_PER_HAND  # 84
 # Domyślny minimalny odstęp pionowy (px) między dłońmi. Gdy dłonie są
 # bliżej siebie niż ten próg, gest jest traktowany jako nieaktywny.
 # Wartość 0 wyłącza sprawdzanie progu.
-DEFAULT_HEIGHT_DIFF_THRESHOLD = 30
+DEFAULT_HEIGHT_DIFF_THRESHOLD = 60
 
 INACTIVE_GESTURE_LABEL = 'inactive'
 CLASSIFICATION_OFF_LABEL = 'classification off'
@@ -391,10 +391,8 @@ class TwoHandGestureClassifier(object):
                 ordered_hands, features, threshold, both_hands_visible)
 
         height_diff = abs(ordered_hands[0].height - ordered_hands[1].height)
-        height_threshold_met = (threshold <= 0
-                                or height_diff >= threshold)
+        height_threshold_met = (height_diff >= threshold)
 
-        # Próg pionowy niespełniony -> gest jest nieaktywny.
         if not height_threshold_met:
             return self._inactive_prediction(
                 ordered_hands,
