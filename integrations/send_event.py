@@ -5,11 +5,7 @@
 Moduł jest cienką fasadą nad :class:`integrations.event_sender.EventSender`.
 Można go użyć dwojako:
 
-* jako biblioteka (funkcja :func:`send_event` lub re-eksport
-  :class:`EventSender`),
-* z terminala, np.::
-
-      python integrations/send_event.py gesture_started Push --confidence 0.92
+Przykład durzycia: python integrations/send_event.py gesture_started Push --confidence 0.92
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ from typing import Any, Optional
 
 try:
     from integrations.event_sender import EventSender
-except ImportError:  # uruchomienie bezpośrednio: python integrations/send_event.py
+except ImportError:
     from event_sender import EventSender
 
 __all__ = ["EventSender", "send_event", "main"]
