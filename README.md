@@ -1,31 +1,31 @@
 # hand-gesture-recognition-mediapipe-for-game-input
 
-Rozpoznawanie gestów **dwóch dłoni** z kamery (MediaPipe + prosty klasyfikator MLP), które przesyła zdarzenia o wykonywanych gestach do silnika **Unity** przez **TCP**. Dzięki temu gesty z kamery mogą sterować grą jak zwykłe wejście (input).
+Two-hand gesture recognition from a webcam (MediaPipe + a simple MLP classifier) that streams events about performed gestures to the **Unity** engine over **TCP**. This lets camera gestures drive a game like any other input.
 
-Projekt jest forkiem [hand-gesture-recognition-mediapipe](https://github.com/Kazuhito00/hand-gesture-recognition-using-mediapipe) (Kazuhito Takahashi, tłumaczenie i ulepszenia: [Nikita Kiselov](https://github.com/kinivi)) i został dostosowany do użycia w grach.
+This project is a fork of [hand-gesture-recognition-mediapipe](https://github.com/Kazuhito00/hand-gesture-recognition-using-mediapipe) (Kazuhito Takahashi; English translation and improvements by [Nikita Kiselov](https://github.com/kinivi)), adapted for game input.
 
-## Co zmieniono względem oryginału
+## What changed compared to the original
 
-- **Rozpoznawanie dwóch rąk** - klasyfikator dostaje cechy obu dłoni naraz (2 × 21 punktów × (x, y) = 84 cechy), a nie pojedynczej dłoni. Dłonie są ustawiane w stałej kolejności (lewa przed prawą), więc wektor cech jest deterministyczny.
-- **Własne gesty** - zamiast domyślnych open / close / pointing model rozpoznaje gesty z gry: `Push`, `Heal`, `Choke`, `Lightning` oraz klasę `inactive`.
-- **Odsiewanie pustych ruchów** - gest jest uznawany za aktywny dopiero, gdy:
-  1. widoczne są obie dłonie,
-  2. różnica wysokości między dłońmi osiąga próg `--height_diff_threshold` (domyślnie 30 px, `0` wyłącza próg),
-  3. klasyfikator zwróci klasę inną niż `inactive` z pewnością co najmniej `--min_gesture_confidence`.
-- **Integracja z Unity przez TCP** (folder `integrations/`) - pipeline zamienia wyniki klasyfikacji na zdarzenia `gesture_started` i `gesture_ended` i wysyła je jako JSON.
-- **Uruchamianie z notatnika** (`integrations/run_pipeline.ipynb`) i lokalny serwer testowy (`integrations/test_server.py`).
-- **Model dłoni w formacie MediaPipe Tasks** (`hand_landmarker.task`) zamiast starego API `mp.solutions`.
+- **Two-hand recognition** – the classifier receives features from both hands at once (2 hands × 21 landmarks × (x, y) = 84 features) instead of a single hand. Hands are always put in a fixed order (left before right), so the feature vector is deterministic.
+- **Custom gestures** – instead of the default open / close / pointing, the model recognizes game gestures: `Push`, `Heal`, `Choke`, `Lightning`, plus an `inactive` class.
+- **Filtering out empty movements** – a gesture is treated as active only when:
+  1. both hands are visible,
+  2. the vertical difference between the hands reaches `--height_diff_threshold` (default 30 px, `0` disables the check),
+  3. the classifier returns a class other than `inactive` with confidence of at least `--min_gesture_confidence`.
+- **Unity integration over TCP** (`integrations/` folder) – the pipeline turns classification results into `gesture_started` and `gesture_ended` events and sends them as JSON.
+- **Running from a notebook** (`integrations/run_pipeline.ipynb`) and a local test server (`integrations/test_server.py`).
+- **MediaPipe Tasks hand model** (`hand_landmarker.task`) instead of the legacy `mp.solutions` API.
 
-## Wymagania
+## Requirements
 
-- Python 3.10+ (projekt rozwijany na Pythonie 3.14)
-- Kamera internetowa
-- Zależności z requirements.txt
+- Python 3.10+ (developed on Python 3.14)
+- A webcam
+- Dependencies from `requirements.txt` (including `mediapipe`, `opencv-python`, `numpy`, `tensorflow` / `tflite`)
 
-## Instalacja
+## Installation
 
 ```bash
-git clone <adres-tego-repozytorium>
+git clone <repository-url>
 cd hand-gesture-recognition-mediapipe-for-game-input
 
 python -m venv .venv
@@ -36,163 +36,128 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
+## Usage
 
-## Struktura projektu
-
-```
-├── app.py                          # podgląd z kamery, zbieranie danych treningowych
-├── integrations/
-│   ├── gesture_pipeline.py         # kamera → klasyfikacja → zdarzenia TCP do Unity
-│   ├── event_sender.py             # klient TCP (EventSender), JSON linia po linii
-│   ├── send_event.py               # wysyłanie pojedynczego zdarzenia z linii poleceń
-│   ├── test_server.py              # prosty serwer TCP do testów bez Unity
-│   └── run_pipeline.ipynb          # uruchamianie pipeline'u z notatnika
-├── model/
-│   ├── hand_landmarker.task        # model wykrywania dłoni MediaPipe
-│   └── keypoint_classifier/
-│       ├── keypoint_classifier.tflite        # klasyfikator gestów (używany domyślnie)
-│       ├── keypoint_classifier.keras         # ten sam model w formacie Keras
-│       ├── keypoint_classifier_label.csv     # nazwy gestów
-│       ├── keypoint.csv                      # dane treningowe
-│       └── keypoint_classifier.py            # logika klasyfikacji dwóch rąk
-└── utils/
-    └── cvfpscalc.py                # pomiar FPS
-```
-
-## Uruchomienie
-
-### Podgląd gestów bez Unity
+### Gesture preview without Unity
 
 ```bash
 python app.py
 ```
 
-Opcje:
+Options:
 
-| Opcja                        | Domyślnie                                                 | Opis                                                                                 |
-| ---------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `--device`                   | `0`                                                       | numer kamery                                                                         |
-| `--width`, `--height`        | `960`, `540`                                              | rozdzielczość przechwytywania                                                        |
-| `--num_hands`                | `2`                                                       | liczba wykrywanych dłoni                                                             |
-| `--model_path`               | `model/hand_landmarker.task`                              | model wykrywania dłoni                                                               |
-| `--classifier_path`          | `model/keypoint_classifier/keypoint_classifier.tflite`    | klasyfikator (`.tflite` lub `.keras`)                                                |
-| `--labels_path`              | `model/keypoint_classifier/keypoint_classifier_label.csv` | etykiety gestów                                                                      |
-| `--min_detection_confidence` | `0.7`                                                     | próg wykrywania dłoni                                                                |
-| `--min_tracking_confidence`  | `0.5`                                                     | próg śledzenia dłoni                                                                 |
-| `--height_diff_threshold`    | `30`                                                      | minimalna różnica pionowa (px) między dłońmi; mniejsza = `inactive`, `0` = wyłączone |
-| `--no_classification`        | -                                                         | tylko wykrywanie dłoni i zapis próbek, bez klasyfikatora                             |
+| Option | Default | Description |
+|---|---|---|
+| `--device` | `0` | camera index |
+| `--width`, `--height` | `960`, `540` | capture resolution |
+| `--num_hands` | `2` | number of hands to detect |
+| `--model_path` | `model/hand_landmarker.task` | hand detection model |
+| `--classifier_path` | `model/keypoint_classifier/keypoint_classifier.tflite` | classifier (`.tflite` or `.keras`) |
+| `--labels_path` | `model/keypoint_classifier/keypoint_classifier_label.csv` | gesture labels |
+| `--min_detection_confidence` | `0.7` | hand detection threshold |
+| `--min_tracking_confidence` | `0.5` | hand tracking threshold |
+| `--height_diff_threshold` | `30` | minimum vertical difference (px) between the hands; smaller means `inactive`, `0` disables the check |
+| `--no_classification` | – | hand detection and sample recording only, no classifier |
 
-### Wysyłanie gestów do Unity
+### Sending gestures to Unity
 
-1. Uruchom w Unity serwer TCP nasłuchujący na wybranym porcie (domyślnie `127.0.0.1:5555`).
-2. Uruchom pipeline:
+1. Start a TCP server in Unity listening on the chosen port (default `127.0.0.1:5555`).
+2. Run the pipeline:
 
 ```bash
 python integrations/gesture_pipeline.py --host 127.0.0.1 --port 5555
 ```
 
-Ścieżki względne (np. `--model_path model/hand_landmarker.task`) są liczone względem bieżącego katalogu, a jeśli tam ich nie ma - względem katalogu głównego projektu, więc skrypt działa niezależnie od miejsca uruchomienia.
+Relative paths (e.g. `--model_path model/hand_landmarker.task`) are resolved against the current directory first, and if the file is not found there, against the project root. The script therefore works regardless of where it is launched from.
 
-Dodatkowe opcje pipeline'u:
+Additional pipeline options:
 
-| Opcja                      | Domyślnie           | Opis                                                 |
-| -------------------------- | ------------------- | ---------------------------------------------------- |
-| `--host`, `--port`         | `127.0.0.1`, `5555` | adres serwera TCP w Unity                            |
-| `--reconnect_delay`        | `2.0`               | przerwa (s) przed ponowną próbą połączenia           |
-| `--min_gesture_confidence` | `0.0`               | minimalna pewność, aby wysłać gest                   |
-| `--no_display`             | -                   | bez okna podglądu OpenCV                             |
-| `--no_flip`                | -                   | bez lustrzanego odbicia obrazu                       |
-| `--max_frames`             | `0`                 | zakończ po N klatkach (`0` = bez limitu)             |
-| `--dry_run`                | -                   | bez łączenia z Unity, zdarzenia wypisywane w konsoli |
-| `--verbose`                | -                   | dodatkowe logi                                       |
+| Option | Default | Description |
+|---|---|---|
+| `--host`, `--port` | `127.0.0.1`, `5555` | address of the TCP server in Unity |
+| `--reconnect_delay` | `2.0` | delay (s) before retrying the connection |
+| `--min_gesture_confidence` | `0.0` | minimum confidence required to send a gesture |
+| `--no_display` | – | no OpenCV preview window |
+| `--no_flip` | – | do not mirror the camera image |
+| `--max_frames` | `0` | stop after N frames (`0` = unlimited) |
+| `--dry_run` | – | do not connect to Unity, print events to the console |
+| `--verbose` | – | extra logging |
 
-Pozostałe opcje (`--device`, `--width`, `--height`, `--model_path`, `--classifier_path`, `--labels_path`, `--num_hands`, progi pewności) działają tak samo jak w `app.py`. Zamknięcie okna podglądu: klawisz **ESC**.
+The remaining options (`--device`, `--width`, `--height`, `--model_path`, `--classifier_path`, `--labels_path`, `--num_hands`, confidence thresholds) work the same as in `app.py`. Press **ESC** to close the preview window.
 
-### Uruchomienie z notatnika
+### Running from a notebook
 
-Otwórz `integrations/run_pipeline.ipynb`, ustaw parametry w pierwszej komórce (host, port, kamera, progi, flagi `DRY_RUN` / `NO_DISPLAY` itd.) i uruchom komórki od góry do dołu. Notatnik sam wykrywa katalog główny projektu i wywołuje `integrations/gesture_pipeline.py` z tymi parametrami.
+Open `integrations/run_pipeline.ipynb`, set the parameters in the first cell (host, port, camera, thresholds, `DRY_RUN` / `NO_DISPLAY` flags, etc.) and run the cells from top to bottom. The notebook detects the project root on its own and calls `integrations/gesture_pipeline.py` with those parameters.
 
-### Test bez Unity
+### Testing without Unity
 
-W jednym terminalu uruchom serwer testowy, który wypisuje odebrane wiadomości:
+In one terminal, start the test server, which prints the messages it receives:
 
 ```bash
 python integrations/test_server.py
 ```
 
-W drugim uruchom pipeline (z kamerą) lub wyślij pojedyncze zdarzenie:
+In another, run the pipeline (with a camera) or send a single event:
 
 ```bash
 python integrations/gesture_pipeline.py
 python integrations/send_event.py gesture_started --gesture Push --confidence 0.92
 ```
 
-Aby sprawdzić samo rozpoznawanie, bez żadnego serwera, użyj `--dry_run`.
+To check recognition alone, without any server, use `--dry_run`.
 
-## Protokół TCP
+## TCP protocol
 
-Każde zdarzenie to **jedna linia JSON zakończona znakiem `\n`** (kodowanie UTF-8). Klient łączy się z serwerem w Unity i w razie zerwania połączenia próbuje je odnowić.
+Each event is **one line of JSON terminated with `\n`** (UTF-8). The client connects to the server in Unity and tries to reconnect if the connection drops.
 
-Początek gestu:
-
-```json
-{
-  "event": "gesture_started",
-  "timestamp": 1731612345.12,
-  "gesture": "Push",
-  "confidence": 0.94,
-  "hand_sign_id": 0
-}
-```
-
-Koniec gestu:
+Gesture start:
 
 ```json
-{
-  "event": "gesture_ended",
-  "timestamp": 1731612346.02,
-  "gesture": "Push",
-  "duration": 0.9,
-  "confidence": 0.94
-}
+{"event": "gesture_started", "timestamp": 1731612345.12, "gesture": "Push", "confidence": 0.94, "hand_sign_id": 0}
 ```
 
-Zdarzenia przychodzą parami: `gesture_started` otwiera gest, a `gesture_ended` zamyka go (także przy zmianie gestu na inny albo przy zamknięciu pipeline'u). Klasa `inactive` nigdy nie jest wysyłana. Zdarzenia po stronie Unity warto odczytywać liniami (`ReadLine`) i parsować np. przez `JsonUtility`.
+Gesture end:
 
-## Dostępne gesty
+```json
+{"event": "gesture_ended", "timestamp": 1731612346.02, "gesture": "Push", "duration": 0.9, "confidence": 0.94}
+```
 
-Etykiety znajdują się w `model/keypoint_classifier/keypoint_classifier_label.csv` (kolejność odpowiada identyfikatorom klas w modelu):
+Events come in pairs: `gesture_started` opens a gesture and `gesture_ended` closes it (also when the gesture changes to a different one, or when the pipeline shuts down). The `inactive` class is never sent. On the Unity side, read events line by line (`ReadLine`) and parse them, e.g. with `JsonUtility`.
 
-| ID  | Gest        |
-| --- | ----------- |
-| 0   | `Push`      |
-| 1   | `Heal`      |
-| 2   | `Choke`     |
-| 3   | `Lightning` |
-| 4   | `inactive`  |
+## Available gestures
 
-## Dodawanie własnych gestów i trening
+Labels are stored in `model/keypoint_classifier/keypoint_classifier_label.csv` (the order matches the class IDs in the model):
 
-Dane treningowe trafiają do `model/keypoint_classifier/keypoint.csv`. Pierwsza kolumna to numer klasy, a pozostałe to 84 znormalizowane współrzędne obu dłoni.
+| ID | Gesture |
+|---|---|
+| 0 | `Push` |
+| 1 | `Heal` |
+| 2 | `Choke` |
+| 3 | `Lightning` |
+| 4 | `inactive` |
 
-1. Uruchom `python app.py` i klawiszem **k** włącz tryb zapisu punktów.
-2. Pokaż gest obiema dłońmi i naciskaj klawisz z numerem klasy (**0-9**), aby dopisywać próbki.
-3. Dopisz nazwę gestu do `keypoint_classifier_label.csv` (w tej samej kolejności co ID; `inactive` powinien być osobną klasą - służy do wyciszania ruchów niebędących gestami).
-4. Wytrenuj model w notatniku treningowym (zmień `NUM_CLASSES` na aktualną liczbę klas) i zapisz wynik jako `.tflite` / `.keras` w `model/keypoint_classifier/`.
+## Adding custom gestures and training
 
-## Rozwiązywanie problemów
+Training data goes to `model/keypoint_classifier/keypoint.csv`. The first column is the class number and the rest are the 84 normalized coordinates of both hands.
 
-- **`Nie znaleziono pliku (...)`** - sprawdź ścieżki do modelu, klasyfikatora i etykiet; komunikat podaje pełną ścieżkę, której szukano.
-- **`Unity niedostępne`** - serwer TCP nie nasłuchuje na podanym hoście i porcie. Pipeline działa dalej i ponawia połączenie przy wysyłaniu gestów. Do testów użyj `integrations/test_server.py`.
-- **Gesty ciągle są `inactive`** - zmniejsz `--height_diff_threshold` (albo ustaw `0`) i upewnij się, że obie dłonie są widoczne w kadrze.
-- **Nie można otworzyć kamery** - zmień `--device` (np. na `1`).
+1. Run `python app.py` and press **k** to enable key point logging.
+2. Show the gesture with both hands and press the class number key (**0–9**) to append samples.
+3. Add the gesture name to `keypoint_classifier_label.csv` (in the same order as the IDs; `inactive` should stay a separate class – it is used to suppress movements that are not gestures).
+4. Train the model in the training notebook (set `NUM_CLASSES` to the current number of classes) and save the result as `.tflite` / `.keras` in `model/keypoint_classifier/`.
 
-## Licencja
+## Troubleshooting
 
-Projekt jest dostępny na licencji **Apache License 2.0**, tak jak oryginalny projekt - szczegóły w pliku [LICENSE](LICENSE).
+- **`Nie znaleziono pliku (...)` (file not found)** – check the paths to the model, classifier and labels; the message shows the full path that was searched.
+- **`Unity niedostępne` (Unity unavailable)** – no TCP server is listening on the given host and port. The pipeline keeps running and retries the connection when sending gestures. Use `integrations/test_server.py` for testing.
+- **Gestures are always `inactive`** – lower `--height_diff_threshold` (or set it to `0`) and make sure both hands are visible in the frame.
+- **Cannot open the camera** – change `--device` (e.g. to `1`).
 
-## Autorzy i podziękowania
+## License
 
-- Oryginalny projekt: [Kazuhito Takahashi](https://twitter.com/KzhtTkhs) - [hand-gesture-recognition-using-mediapipe](https://github.com/Kazuhito00/hand-gesture-recognition-using-mediapipe)
-- Tłumaczenie na angielski i ulepszenia: [Nikita Kiselov](https://github.com/kinivi)
+This project is released under the **Apache License 2.0**, the same as the original project – see the [LICENSE](LICENSE) file.
+
+## Credits
+
+- Original project: [Kazuhito Takahashi](https://twitter.com/KzhtTkhs) – [hand-gesture-recognition-using-mediapipe](https://github.com/Kazuhito00/hand-gesture-recognition-using-mediapipe)
+- English translation and improvements: [Nikita Kiselov](https://github.com/kinivi)
 - [MediaPipe](https://mediapipe.dev/)
