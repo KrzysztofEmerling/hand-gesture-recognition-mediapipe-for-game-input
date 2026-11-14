@@ -98,8 +98,8 @@ def get_args():
                         type=float,
                         default=0.7)
     parser.add_argument("--height_diff_threshold",
-                        help='max allowed vertical distance (px) between the '
-                             'two hands; a bigger difference forces the '
+                        help='min allowed vertical distance (px) between the '
+                             'two hands; a smaller difference forces the '
                              'gesture to inactive (0 = disabled)',
                         type=int,
                         default=100)
@@ -313,7 +313,7 @@ def main():
         # A bigger difference than the threshold -> gesture forced inactive.
         if both_hands_visible:
             height_diff = abs(hands[0]['height'] - hands[1]['height'])
-            hands_at_same_height = height_diff <= height_diff_threshold
+            hands_at_same_height = height_diff >= height_diff_threshold
         else:
             height_diff = 0.0
             hands_at_same_height = False
