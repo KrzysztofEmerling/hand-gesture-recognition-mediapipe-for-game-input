@@ -12,13 +12,16 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-from utils import CvFpsCalc
+from utils import CvFpsCalc, draw_hand_centers, draw_rest_zone
 from model import (
     DEFAULT_HEIGHT_DIFF_THRESHOLD,
+    DEFAULT_REST_ZONE_RADIUS,
+    DEFAULT_REST_ZONE_Y_OFFSET,
     LANDMARKS_PER_HAND,
     NUM_FEATURES,
     NUM_HANDS,
     HandSample,
+    RestZone,
     TwoHandGestureClassifier,
     load_keypoint_classifier,
     load_labels,
@@ -68,6 +71,17 @@ def get_args():
                              'gesture to inactive (0 = disabled)',
                         type=int,
                         default=DEFAULT_HEIGHT_DIFF_THRESHOLD)
+    parser.add_argument("--rest_zone_radius",
+                        help='radius (px) of the half-circle rest zone at the '
+                             'bottom of the screen; both hands inside it force '
+                             'the gesture to inactive (0 = disabled)',
+                        type=int,
+                        default=DEFAULT_REST_ZONE_RADIUS)
+    parser.add_argument("--rest_zone_y_offset",
+                        help='how far (px) BELOW the bottom edge of the screen '
+                             'the rest zone circle center lies',
+                        type=int,
+                        default=DEFAULT_REST_ZONE_Y_OFFSET)
     parser.add_argument("--min_tracking_confidence",
                         help='min_tracking_confidence',
                         type=float,
@@ -98,6 +112,8 @@ def main():
     min_detection_confidence = args.min_detection_confidence
     min_tracking_confidence = args.min_tracking_confidence
     height_diff_threshold = args.height_diff_threshold
+    rest_zone = RestZone(radius=args.rest_zone_radius,
+                         y_offset=args.rest_zone_y_offset)
 
     # --no_classification: run the app WITHOUT the keypoint classifier
     use_classifier = not args.no_classification
@@ -153,6 +169,7 @@ def main():
         labels=keypoint_classifier_labels,
         inactive_label=inactive_label,
         height_diff_threshold=height_diff_threshold,
+        rest_zone=rest_zone,
     )
 
     # FPS Measurement ########################################################
@@ -273,6 +290,7 @@ def main():
                 capture_missing_hand_until = time.monotonic() + 0.6
 
         # Drawing part
+        debug_image = draw_rest_zone(debug_image, rest_zone, prediction)
         for hand in hands:
             debug_image = draw_bounding_rect(use_brect, debug_image,
                                              hand.brect)
@@ -285,6 +303,7 @@ def main():
                 if prediction.classified
                 and prediction.height_threshold_met else '',
             )
+        debug_image = draw_hand_centers(debug_image, prediction)
 
         debug_image = draw_info(debug_image, fps, mode, number, category,
                                 captured_count,
@@ -298,7 +317,8 @@ def main():
                                               hands[:NUM_HANDS]],
                                 height_diff=prediction.height_diff,
                                 height_threshold=prediction.height_diff_threshold,
-                                height_threshold_met=prediction.height_threshold_met)
+                                height_threshold_met=prediction.height_threshold_met,
+                                in_rest_zone=prediction.in_rest_zone)
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -488,7 +508,8 @@ def draw_info_text(image, brect, handedness_label, hand_sign_text):
 def draw_info(image, fps, mode, number, category, captured_count, just_saved,
               capture_pending, gesture_text, missing_hand, both_hands_visible,
               category_labels=None, hand_heights=None, height_diff=0.0,
-              height_threshold=0, height_threshold_met=True):
+              height_threshold=0, height_threshold_met=True,
+              in_rest_zone=False):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
@@ -537,10 +558,13 @@ def draw_info(image, fps, mode, number, category, captured_count, just_saved,
 
     # Recognized gesture (both hands combined into one sample)
     gesture_line = "GESTURE:" + gesture_text
+    if in_rest_zone:
+        gesture_line += " (rest zone)"
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
                (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
                (0, 255, 0) if both_hands_visible and height_threshold_met
+               and not in_rest_zone
                else (0, 165, 255), 2,
                cv.LINE_AA)
 

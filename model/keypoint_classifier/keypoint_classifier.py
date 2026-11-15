@@ -8,12 +8,15 @@ Moduł zawiera:
 * ``KerasKeyPointClassifier`` - klasyfikator oparty o model Keras,
 * ``TwoHandGestureClassifier`` - warstwę wysokopoziomową, która składa
   landmarki obu dłoni w jeden wektor cech i pilnuje progu pionowego
-  rozstawienia dłoni (``height_diff_threshold``).
+  rozstawienia dłoni (``height_diff_threshold``) oraz strefy spoczynku
+  (``RestZone``) - gdy obie dłonie leżą w półokręgu przy dolnej krawędzi
+  obrazu, gest jest traktowany jako ``inactive``.
 """
 
 import csv
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -28,6 +31,13 @@ NUM_FEATURES = NUM_HANDS * FEATURES_PER_HAND  # 84
 # bliżej siebie niż ten próg, gest jest traktowany jako nieaktywny.
 # Wartość 0 wyłącza sprawdzanie progu.
 DEFAULT_HEIGHT_DIFF_THRESHOLD = 60
+
+# Domyślna strefa spoczynku: półokrąg przy dolnej krawędzi obrazu.
+# Środek okręgu leży na środku obrazu w poziomie i
+# ``DEFAULT_REST_ZONE_Y_OFFSET`` px PONIŻEJ dolnej krawędzi.
+# Promień 0 wyłącza strefę.
+DEFAULT_REST_ZONE_RADIUS = 300
+DEFAULT_REST_ZONE_Y_OFFSET = 120
 
 INACTIVE_GESTURE_LABEL = 'inactive'
 CLASSIFICATION_OFF_LABEL = 'classification off'
@@ -208,6 +218,50 @@ def pre_process_landmark(landmark_list):
 
 
 @dataclass
+class RestZone:
+    """Półokrągła strefa spoczynku przy dolnej krawędzi obrazu.
+
+    Parametry
+    ---------
+    radius:
+        Promień okręgu w pikselach. ``0`` wyłącza strefę.
+    y_offset:
+        O ile pikseli PONIŻEJ dolnej krawędzi obrazu leży środek okręgu.
+        Im większa wartość, tym niższy (płytszy) widoczny półokrąg.
+        Widoczna wysokość strefy = ``radius - y_offset``.
+    """
+
+    radius: int = DEFAULT_REST_ZONE_RADIUS
+    y_offset: int = DEFAULT_REST_ZONE_Y_OFFSET
+
+    @property
+    def enabled(self):
+        return self.radius > 0 and self.radius > self.y_offset
+
+    def center(self, image_width, image_height):
+        """Środek okręgu w pikselach (może leżeć poza obrazem)."""
+        return (int(image_width // 2), int(image_height + self.y_offset))
+
+    def contains(self, point, image_width, image_height):
+        """Czy punkt ``(x, y)`` leży wewnątrz strefy."""
+        if not self.enabled:
+            return False
+
+        center_x, center_y = self.center(image_width, image_height)
+        return math.hypot(point[0] - center_x,
+                          point[1] - center_y) <= self.radius
+
+    def contains_hand(self, hand):
+        """Czy środek dłoni (średnia landmarków) leży w strefie."""
+        if (not self.enabled or not hand.landmark_list
+                or hand.image_width is None or hand.image_height is None):
+            return False
+
+        return self.contains(hand.center, hand.image_width,
+                             hand.image_height)
+
+
+@dataclass
 class HandSample:
     """Pojedyncza dłoń przygotowana do klasyfikacji."""
 
@@ -215,6 +269,8 @@ class HandSample:
     landmark_list: List[List[int]]
     pre_processed: List[float]
     brect: Optional[List[int]] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
     @classmethod
     def from_mediapipe(
@@ -232,7 +288,19 @@ class HandSample:
             landmark_list=landmark_list,
             pre_processed=pre_process_landmark(landmark_list),
             brect=brect,
+            image_width=image_width,
+            image_height=image_height,
         )
+
+    @property
+    def center(self):
+        """Środek dłoni ``(x, y)`` - średnia landmarków w pikselach."""
+        if not self.landmark_list:
+            return (0.0, 0.0)
+
+        count = len(self.landmark_list)
+        return (sum(point[0] for point in self.landmark_list) / count,
+                sum(point[1] for point in self.landmark_list) / count)
 
     @property
     def height(self):
@@ -258,6 +326,10 @@ class GesturePrediction:
     height_diff_threshold: int
     features: List[float]
     hands: List[HandSample]
+    # Strefa spoczynku: czy obie dłonie są w strefie + stan każdej dłoni
+    # (w kolejności ``hands``).
+    in_rest_zone: bool = False
+    hands_in_rest_zone: List[bool] = field(default_factory=list)
 
     @property
     def active(self):
@@ -279,6 +351,10 @@ class TwoHandGestureClassifier(object):
         Minimalna różnica pionowa (px) między dłońmi wymagana do
         klasyfikacji. Mniejsza różnica => gest ``inactive``.
         ``0`` wyłącza próg.
+    rest_zone:
+        :class:`RestZone` - gdy obie dłonie są w strefie jednocześnie,
+        gest jest ``inactive``. ``None`` = strefa domyślna; aby wyłączyć,
+        podaj ``RestZone(radius=0)``.
     """
 
     def __init__(
@@ -287,8 +363,10 @@ class TwoHandGestureClassifier(object):
         labels=None,
         inactive_label=None,
         height_diff_threshold=DEFAULT_HEIGHT_DIFF_THRESHOLD,
+        rest_zone=None,
     ):
         self.classifier = classifier
+        self.rest_zone = rest_zone if rest_zone is not None else RestZone()
         self.labels = list(labels) if labels is not None else []
 
         if inactive_label is None:
@@ -361,6 +439,8 @@ class TwoHandGestureClassifier(object):
         height_diff=0.0,
         height_threshold_met=False,
         label=None,
+        in_rest_zone=False,
+        hands_in_rest_zone=None,
     ):
         return GesturePrediction(
             hand_sign_id=self.inactive_id,
@@ -374,6 +454,8 @@ class TwoHandGestureClassifier(object):
             height_diff_threshold=threshold,
             features=features,
             hands=ordered_hands,
+            in_rest_zone=in_rest_zone,
+            hands_in_rest_zone=list(hands_in_rest_zone or []),
         )
 
     def classify(self, hands, height_diff_threshold=None):
@@ -385,13 +467,30 @@ class TwoHandGestureClassifier(object):
         ordered_hands = self.order_hands(hands)
         features = self.combine_features(ordered_hands)
         both_hands_visible = len(ordered_hands) >= NUM_HANDS
+        hands_in_rest_zone = [self.rest_zone.contains_hand(hand)
+                              for hand in ordered_hands]
 
         if not both_hands_visible:
             return self._inactive_prediction(
-                ordered_hands, features, threshold, both_hands_visible)
+                ordered_hands, features, threshold, both_hands_visible,
+                hands_in_rest_zone=hands_in_rest_zone)
 
         height_diff = abs(ordered_hands[0].height - ordered_hands[1].height)
         height_threshold_met = (height_diff >= threshold)
+
+        # Obie dłonie w strefie spoczynku => ruch nieaktywny.
+        in_rest_zone = all(hands_in_rest_zone[:NUM_HANDS])
+        if in_rest_zone:
+            return self._inactive_prediction(
+                ordered_hands,
+                features,
+                threshold,
+                both_hands_visible,
+                height_diff=height_diff,
+                height_threshold_met=height_threshold_met,
+                in_rest_zone=True,
+                hands_in_rest_zone=hands_in_rest_zone,
+            )
 
         if not height_threshold_met:
             return self._inactive_prediction(
@@ -401,6 +500,7 @@ class TwoHandGestureClassifier(object):
                 both_hands_visible,
                 height_diff=height_diff,
                 height_threshold_met=False,
+                hands_in_rest_zone=hands_in_rest_zone,
             )
 
         # Tryb bez klasyfikatora (samo wykrywanie dłoni).
@@ -413,6 +513,7 @@ class TwoHandGestureClassifier(object):
                 height_diff=height_diff,
                 height_threshold_met=True,
                 label=CLASSIFICATION_OFF_LABEL,
+                hands_in_rest_zone=hands_in_rest_zone,
             )
 
         probabilities = self.classifier.predict_proba(features)
@@ -438,4 +539,6 @@ class TwoHandGestureClassifier(object):
             height_diff_threshold=threshold,
             features=features,
             hands=ordered_hands,
+            in_rest_zone=False,
+            hands_in_rest_zone=hands_in_rest_zone,
         )
