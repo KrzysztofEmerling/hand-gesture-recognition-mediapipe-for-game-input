@@ -139,3 +139,7 @@ model/__init__.py
 integrations/__init__.py
 utils/__init__.py
 utils/__init__.py
+
+# EEG: simulated recordings (plumbing tests) and automatic model backups
+eeg/data/**/sim_*
+eeg/models/backup/

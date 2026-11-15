@@ -169,6 +169,7 @@ class EEGSpellStream:
         self.pipeline.connect(bandpass, notch)
         self.pipeline.connect(notch, self._sink)
         self._started = False
+        self.recorder = None                         # eeg.recorder.SessionRecorder: gets every sample
 
     def start(self) -> None:
         self.pipeline.start()
@@ -178,6 +179,8 @@ class EEGSpellStream:
         """Process everything that arrived since the last call. Call it often (every frame)."""
         out = []
         for t_arrival, frame in self._sink.take():
+            if self.recorder is not None:
+                self.recorder.add(frame, t_arrival)
             out += self.processor.push(frame, t_arrival)
             self._last_data = t_arrival
         now = time.monotonic()

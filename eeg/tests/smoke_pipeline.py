@@ -11,12 +11,15 @@
 
 Checks: the loop runs, EEG windows are produced and scored, only the new
 ``ability_*`` events are sent as one JSON object per line, Choke start/end
-pair up, Push is a single trigger.
+pair up, Push is a single trigger. A third run (``--eeg sim --eeg_record``)
+checks that the in-game recording is saved and loads as Choke + Push trials.
 """
 
+import glob
 import json
 import socket
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -91,7 +94,7 @@ def scripted(t0):
     return detect
 
 
-def run(eeg_mode, port, seconds=10.5):
+def run(eeg_mode, port, seconds=10.5, extra=()):
     lines, ready = [], threading.Event()
     th = threading.Thread(target=server, args=(port, lines, ready), daemon=True)
     th.start()
@@ -110,7 +113,7 @@ def run(eeg_mode, port, seconds=10.5):
     # with random EEG the decisions are random - use camera fallback so events flow
     args = gpipe.get_args(["--port", str(port), "--no_display", "--eeg", eeg_mode,
                            "--eeg_fallback", "cv", "--max_frames", str(int(seconds * 30)),
-                           "--eeg_min_windows", "2", "--eeg_min_windows_push", "2"])
+                           "--eeg_min_windows", "2", "--eeg_min_windows_push", "2", *extra])
     gpipe.run_camera(args)
     gpipe.AbilityBridge.update = orig_update
     th.join(5)
@@ -143,8 +146,30 @@ def main():
         for name, passed in checks.items():
             print("   {} {}".format("PASS" if passed else "FAIL", name))
             ok &= passed
+    ok &= record_check()
     print("\nSMOKE TEST", "PASSED" if ok else "FAILED")
     return 0 if ok else 1
+
+
+def record_check():
+    import pandas as pd
+    from eeg.dataset import parse_trials
+    with tempfile.TemporaryDirectory() as d:
+        run("sim", 56303, extra=("--eeg_record", "--record_label", "imagination", "--record_dir", d))
+        files = glob.glob(d + "/sim_game_*.csv.gz")
+        checks = {"recording saved (sim_game_*.csv.gz + events)": len(files) == 1
+                  and len(glob.glob(d + "/sim_game_*_events.jsonl")) == 1}
+        if files:
+            df = pd.read_csv(files[0])
+            tr = parse_trials(df, "x", "game")
+            checks["~10 s of EEG recorded"] = 8 * 250 < len(df) < 13 * 250
+            checks["Choke + Push trials, labelled imagination"] = (
+                sorted(tr.spell) == ["choke_squeeze", "push_with_push"] and tr.y.tolist() == [1, 1])
+            checks["gesture column has the camera labels"] = {"Choke", "Push"} <= set(df.gesture.dropna())
+    print("\n--eeg sim --eeg_record")
+    for name, passed in checks.items():
+        print("   {} {}".format("PASS" if passed else "FAIL", name))
+    return all(checks.values())
 
 
 if __name__ == "__main__":

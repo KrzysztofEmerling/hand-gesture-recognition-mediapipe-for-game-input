@@ -51,7 +51,8 @@ python integrations/gesture_pipeline.py --eeg sim --dry_run
 python integrations/gesture_pipeline.py --legacy_events
 ```
 
-Before playing: wet/gel the electrodes and check every channel has contact. The
+Before playing: wet/gel the electrodes and run `python -m eeg.tools.check_signal`
+(see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)). Check that every channel has contact. The
 preview window shows `EEG 82%: contact OK` in green; in red it names the
 electrode (e.g. `Cz not touching`). The models use **Fz, Cz, C4, PO7, POz,
 PO8** – if one of those has no contact, abilities are blocked (or camera-only
@@ -93,6 +94,11 @@ A panel to the right of the camera preview shows three predictions side by side:
 | `--decision` | `gate` | `gate` = `SpellGate` (below); `instant` = `InstantEEGCheck`, see *Instant check* |
 | `--eeg_check_windows` | `4` | `--decision instant`: windows averaged at the moment of detection |
 | `--legacy_events` | – | old `gesture_started` / `gesture_ended` protocol, no EEG |
+| `--calibrate N` | `0` | in-game calibration: N prompted trials with and N without imagination per ability, recorded to `eeg/data/game/` ([`TRAINING.md`](TRAINING.md)) |
+| `--calibrate_abilities` | all | `--calibrate`: only these abilities |
+| `--eeg_record` | – | record EEG + camera gestures while playing; `y` / `n` in the preview labels the last gesture |
+| `--record_label` | `none` | `--eeg_record`: label for gestures not labelled by key (`imagination` / `only`) |
+| `--record_dir` | `eeg/data/game` | where in-game recordings go |
 | `--no_panel` | – | no prediction panel next to the preview |
 | `--fusion_cv_weight` | `0.5` | panel: camera weight in the combined score (0..1) |
 | `--fusion_threshold` | `0.5` | panel: minimum combined score for a prediction |
@@ -206,6 +212,14 @@ switch (e.@event) {
 | `tests/test_fusion.py` | `python -m eeg.tests.test_fusion` – combined-prediction tests |
 | `tests/smoke_pipeline.py` | `python -m eeg.tests.smoke_pipeline` – whole pipeline, fake camera, gpype, TCP |
 | `tools/replay_recording.py` | `python -m eeg.tools.replay_recording rec.csv` – real EEG recording through the live path |
+| `train.py` | `python -m eeg.train list / fit / calibrate / evaluate` – retrain on all data, calibrate thresholds ([`TRAINING.md`](TRAINING.md)) |
+| `dataset.py` | recordings (cued + in-game) → labelled feature windows, `eeg/data/manifest.json` |
+| `recorder.py` | in-game recording + `--calibrate` prompts (no hardware) |
+| `data/` | training recordings (`.csv.gz`), `data/game/` = in-game recordings |
+| `tools/record_spells.py` | `python -m eeg.tools.record_spells` – cued recording session without camera |
+| `tools/check_signal.py` | `python -m eeg.tools.check_signal [--watch]` – electrode contact, noise, hum, alpha test |
+| `tools/doctor.py` | `python -m eeg.tools.doctor [--scan] [--headset]` – packages, model, data, Bluetooth, headset stream |
+| `tests/test_training.py` | `python -m eeg.tests.test_training` – recorder, calibration, fit / calibrate / evaluate |
 
 ## The models
 
@@ -214,3 +228,7 @@ windows from Fz, Cz, C4, PO7, POz, PO8, trained on four sessions of one player
 (gesture with vs without imagination; 15–25 trials per class and spell).
 Thresholds are set for ~10 % false activations on held-out trials. The models
 are **personal** – another player needs their own recordings and retraining.
+
+To retrain on all data, add in-game data or re-calibrate the thresholds when the
+signal changes, see [`TRAINING.md`](TRAINING.md). For connection and electrode problems, see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).

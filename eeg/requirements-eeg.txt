@@ -5,6 +5,7 @@ gtec-ble==2.9.4              # BCI Core-8 Bluetooth LE driver
 scikit-learn==1.9.1          # MUST match the version that pickled models/live_models.joblib
 scipy>=1.17
 joblib>=1.5
+pandas>=2.0                 # recordings, training (eeg/train.py), replay
 numpy>=2.0
 
 # Camera side without full TensorFlow: the .tflite gesture classifier also runs on

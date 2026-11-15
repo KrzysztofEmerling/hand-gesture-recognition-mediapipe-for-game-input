@@ -18,6 +18,12 @@ CH = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "POz", "PO8"]   # BCI Core-8 montage 
 SOS = butter(4, [8, 30], btype="band", fs=RATE, output="sos")
 
 
+def bandpass(x):
+    """Causal 8-30 Hz over a whole recording (samples x channels) - what
+    :class:`StreamFilter` produces chunk by chunk live (training uses this)."""
+    return sosfilt(SOS, x, axis=0)
+
+
 class StreamFilter:
     """Causal 8-30 Hz band-pass that keeps its state between chunks."""
 

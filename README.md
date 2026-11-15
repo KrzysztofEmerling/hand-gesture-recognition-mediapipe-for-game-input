@@ -15,7 +15,7 @@ This project is a fork of [hand-gesture-recognition-mediapipe](https://github.co
 - **Unity integration over TCP** (`integrations/` folder) – the pipeline turns classification results into `gesture_started` and `gesture_ended` events and sends them as JSON.
 - **Running from a notebook** (`integrations/run_pipeline.ipynb`) and a local test server (`integrations/test_server.py`).
 - **MediaPipe Tasks hand model** (`hand_landmarker.task`) instead of the legacy `mp.solutions` API.
-- **EEG gating** (`eeg/` folder) – a g.tec BCI Core-8 headset checks that the player also *imagines* the spell. An ability fires only for gesture **+** imagination, and Unity receives only ability events: `ability_triggered` (Push) and `ability_started` / `ability_ended` (Heal, Choke, Lightning – they last while the gesture is held). Camera and EEG flicker are filtered out. Details: [`eeg/README.md`](eeg/README.md).
+- **EEG gating** (`eeg/` folder) – a g.tec BCI Core-8 headset checks that the player also *imagines* the spell. An ability fires only for gesture **+** imagination, and Unity receives only ability events: `ability_triggered` (Push) and `ability_started` / `ability_ended` (Heal, Choke, Lightning – they last while the gesture is held). Camera and EEG flicker are filtered out. Details: [`eeg/README.md`](eeg/README.md). Retraining / in-game calibration of the EEG models: [`eeg/TRAINING.md`](eeg/TRAINING.md); headset and electrode troubleshooting: [`eeg/TROUBLESHOOTING.md`](eeg/TROUBLESHOOTING.md).
 
 ## Requirements
 

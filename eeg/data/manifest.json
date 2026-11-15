@@ -1,0 +1,35 @@
+{
+  "_about": "Notes per recording for eeg.train. Files in eeg/data/** that are not listed here are used with defaults (kind from the name: game_* = in-game, otherwise cued). Set \"use\": false to leave a recording out; \"skip_spells\" leaves out single spells.",
+  "recordings": {
+    "spells_20261114_214421": {
+      "kind": "cued",
+      "electrodes": "dry",
+      "use": false,
+      "note": "S1, dry electrodes, noisy - pooling it made every model worse"
+    },
+    "spells_20261114_232939": {
+      "kind": "cued",
+      "electrodes": "gel",
+      "use": true,
+      "note": "S2, gel; Pz flat"
+    },
+    "spells_20261115_020754": {
+      "kind": "cued",
+      "electrodes": "gel",
+      "use": true,
+      "note": "S3, gel, 10 s breaks; C3 not touching the whole session"
+    },
+    "spells_20261115_024652": {
+      "kind": "cued",
+      "electrodes": "gel",
+      "use": true,
+      "note": "S4, gel; all 8 channels good, Fz contact fades over time"
+    },
+    "spells_push_20261115_030348": {
+      "kind": "cued",
+      "electrodes": "gel",
+      "use": true,
+      "note": "push with push only, 10 + 10 trials in random order"
+    }
+  }
+}

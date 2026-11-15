@@ -32,6 +32,11 @@ bez headsetu EEG (sama kamera, nowe zdarzenia)::
 lub bez wysyłania (podgląd w konsoli)::
 
     python integrations/gesture_pipeline.py --dry_run
+
+nagrywanie EEG w grze do douczania / kalibracji modeli (``eeg/TRAINING.md``)::
+
+    python integrations/gesture_pipeline.py --calibrate 4      # podpowiadane próby z / bez wyobrażenia
+    python integrations/gesture_pipeline.py --eeg_record       # zwykła gra, klawisze y / n = etykieta gestu
 """
 
 from __future__ import annotations
@@ -55,7 +60,11 @@ from integrations.send_event import EventSender
 from eeg import ABILITIES, GateConfig, SpellGate
 from eeg.fusion import EEGMonitor, FusionConfig, cv_ability_probs, fuse
 from eeg.instant_check import InstantEEGCheck
-from utils import draw_hand_centers, draw_prediction_panel, draw_rest_zone
+from utils import draw_hand_centers, draw_rest_zone
+try:
+    from utils import draw_prediction_panel
+except ImportError:            # utils/prediction_panel not in the repo yet -> old overlay (--no_panel)
+    draw_prediction_panel = None
 from model import (
     DEFAULT_GESTURE_COOLDOWN,
     DEFAULT_HEIGHT_DIFF_THRESHOLD,
@@ -321,6 +330,8 @@ class AbilityBridge:
         self.fusion = fusion or FusionConfig()
         self.monitor = EEGMonitor({spell: gate.threshold(spell) for spell, _ in ABILITIES.values()},
                                   n_windows=self.fusion.eeg_windows, stale_s=self.fusion.eeg_stale_s)
+        self.recorder = None          # eeg.recorder.SessionRecorder (--eeg_record / --calibrate)
+        self.calibration = None       # eeg.recorder.Calibration (--calibrate)
 
     def update(self, prediction: GesturePrediction) -> list:
         now = time.monotonic()
@@ -347,6 +358,12 @@ class AbilityBridge:
         for event in events:
             self.sender.send_json(event)
             self._log(event)
+        if self.recorder is not None:
+            finished = self.recorder.gesture(now, label)
+            for event in events:
+                self.recorder.event(now, event)
+            if self.calibration is not None:
+                self.calibration.update(now, finished)
         if isinstance(self.gate, InstantEEGCheck):          # --decision instant
             for decision in self.gate.pop_decisions():
                 if decision["event"] == "ignored":
@@ -367,6 +384,24 @@ class AbilityBridge:
         for event in self.gate.close(time.monotonic()):
             self.sender.send_json(event)
             self._log(event)
+        if self.recorder is not None:
+            try:
+                self.eeg.poll()                       # samples still waiting in gpype
+            except Exception:
+                pass
+            self.recorder.save(sim=self.eeg.mode == "sim")
+            self.recorder = None
+
+    def label_last(self, label: str) -> None:
+        """Klawisz y / n: etykieta ostatniego gestu do nagrania."""
+        if self.recorder is None:
+            return
+        ep = self.recorder.label_last(label, time.monotonic())
+        if ep is None:
+            print("[EEG record] brak gestu do oznaczenia")
+        else:
+            print("[EEG record] {} -> {}".format(ep.ability, "imagination" if label == "imagination"
+                                                 else "gesture only"))
 
     @staticmethod
     def _log_ignored(decision: dict) -> None:
@@ -503,6 +538,21 @@ def get_args(argv=None):
     parser.add_argument("--legacy_events", action="store_true",
                         help="stary protokół gesture_started/gesture_ended (bez EEG)")
 
+    # Nagrywanie w grze -> douczanie / kalibracja (eeg/TRAINING.md) ###########
+    parser.add_argument("--eeg_record", action="store_true",
+                        help="nagraj EEG + gesty z kamery do eeg/data/game/game_*.csv.gz; "
+                             "w oknie podglądu y = gest z wyobrażeniem, n = sam gest")
+    parser.add_argument("--record_label", choices=("none", "imagination", "only"), default="none",
+                        help="--eeg_record: etykieta gestów nieoznaczonych klawiszem "
+                             "(imagination = w tej sesji każdy gest był z wyobrażeniem)")
+    parser.add_argument("--calibrate", type=int, default=0, metavar="N",
+                        help="sesja kalibracyjna: N prób z i N bez wyobrażenia na umiejętność, "
+                             "podpowiadanych w podglądzie (włącza --eeg_record)")
+    parser.add_argument("--calibrate_abilities", nargs="+", choices=list(ABILITIES),
+                        help="--calibrate: tylko te umiejętności")
+    parser.add_argument("--record_dir", default=str(PROJECT_ROOT / "eeg" / "data" / "game"),
+                        help="folder nagrań z gry (default: %(default)s)")
+
     parser.add_argument("--no_display", action="store_true",
                         help="nie otwieraj okna podglądu OpenCV")
     parser.add_argument("--no_flip", action="store_true",
@@ -517,6 +567,8 @@ def get_args(argv=None):
 
 
 def run_camera(args) -> None:
+    if draw_prediction_panel is None and not args.no_panel and not args.no_display:
+        print("[gesture_pipeline] utils.draw_prediction_panel not found - showing the old overlay")
     pipeline = GesturePipeline(
         model_path=args.model_path,
         classifier_path=args.classifier_path,
@@ -581,14 +633,17 @@ def run_camera(args) -> None:
                 draw_rest_zone(image, pipeline.rest_zone, prediction)
                 draw_hand_centers(image, prediction)
                 draw_status(image, prediction)
-                if not args.no_panel:
+                if not args.no_panel and draw_prediction_panel is not None:
                     image = draw_panel(image, prediction, pipeline.labels, bridge, args)
                 elif isinstance(bridge, AbilityBridge):
                     draw_ability_status(image, bridge)
+                draw_recording(image, bridge)
                 cv.imshow("Gesture Pipeline", image)
                 key = cv.waitKey(1) & 0xFF
                 if key == 27:  # ESC
                     break
+                if key in (ord("y"), ord("n")) and isinstance(bridge, AbilityBridge):
+                    bridge.label_last("imagination" if key == ord("y") else "only")
 
             if args.max_frames > 0 and frame_count >= args.max_frames:
                 break
@@ -608,6 +663,8 @@ def run_camera(args) -> None:
 def make_bridge(args, sender, inactive_label):
     """Stary most (gesture_started/ended) albo kamera + EEG (zdarzenia umiejętności)."""
     verbose = args.verbose or args.dry_run
+    if (args.eeg_record or args.calibrate) and (args.legacy_events or args.eeg == "off"):
+        raise SystemExit("--eeg_record / --calibrate need EEG (--eeg headset or sim, no --legacy_events)")
     if args.legacy_events:
         return UnityGestureBridge(sender=sender, min_confidence=args.min_gesture_confidence,
                                   inactive_label=inactive_label, verbose=verbose), None
@@ -646,6 +703,18 @@ def make_bridge(args, sender, inactive_label):
                           decision_threshold=args.fusion_threshold)
     bridge = AbilityBridge(sender, gate, eeg_stream, min_confidence=args.min_gesture_confidence,
                            inactive_label=inactive_label, verbose=verbose, fusion=fusion)
+    if args.eeg_record or args.calibrate:
+        from eeg.recorder import Calibration, SessionRecorder
+        rec = SessionRecorder(Path(args.record_dir), cfg=config,
+                              default_label=None if args.record_label == "none" else args.record_label)
+        eeg_stream.recorder = bridge.recorder = rec
+        print("[EEG record] nagrywanie -> {} (zapis przy wyjściu, ESC)".format(rec.out_dir))
+        if args.calibrate:
+            bridge.calibration = Calibration(rec, reps=args.calibrate, abilities=args.calibrate_abilities)
+            print("[calibration] {} prób - patrz podpowiedzi w podglądzie / konsoli".format(
+                len(bridge.calibration.plan)))
+        else:
+            print("[EEG record] y = ostatni gest Z wyobrażeniem, n = BEZ (okno podglądu musi mieć fokus)")
     return bridge, eeg_stream
 
 
@@ -704,6 +773,26 @@ def draw_ability_status(image, bridge: "AbilityBridge") -> None:
                      (0, 255, 0) if view["score"] >= view["threshold"] else (0, 200, 255), -1)
         tx = x0 + int(w * view["threshold"])
         cv.line(image, (tx, y - 11), (tx, y + 5), (255, 255, 255), 2)
+
+
+def draw_recording(image, bridge) -> None:
+    """Nagrywanie / kalibracja: podpowiedź na górze podglądu."""
+    rec = getattr(bridge, "recorder", None)
+    if rec is None:
+        return
+    cal = bridge.calibration
+    if cal is not None:
+        lines = cal.lines(time.monotonic())
+        colour = (0, 220, 255) if cal.state == "go" and not cal.finished else (255, 255, 255)
+    else:
+        n = sum(rec.counts().values()) + (rec.tracker.current is not None)
+        lines = ["REC  {} gestures   y = with imagination, n = gesture only".format(n)]
+        colour = (80, 80, 255)
+    h = 34 * len(lines) + 12
+    cv.rectangle(image, (0, 0), (image.shape[1], h), (0, 0, 0), -1)
+    for i, line in enumerate(lines):
+        cv.putText(image, line, (12, 32 + 34 * i), cv.FONT_HERSHEY_SIMPLEX, 0.85,
+                   colour if i == 0 else (230, 230, 230), 2, cv.LINE_AA)
 
 
 def draw_status(image, prediction: GesturePrediction) -> None:
