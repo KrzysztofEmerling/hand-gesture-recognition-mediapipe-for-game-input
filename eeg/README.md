@@ -57,8 +57,23 @@ electrode (e.g. `Cz not touching`). The models use **Fz, Cz, C4, PO7, POz,
 PO8** – if one of those has no contact, abilities are blocked (or camera-only
 with `--eeg_fallback cv`).
 
-The preview also shows, while you hold a gesture, the EEG score against the
-spell's threshold (bar + white line) and `waiting for EEG` / `ACTIVE` / `FIRED`.
+A panel to the right of the camera preview shows three predictions side by side:
+
+* **CAMERA** – the gesture classifier's probability for every class.
+* **EEG** – headset status and, for every ability, the mean P(imagination) of
+  the last `--eeg_display_windows` windows (default 4) with the model's
+  threshold as a white line; green = above the threshold. This is continuous,
+  independent of the current gesture.
+* **COMBINED** – `cv^w * eeg^(1-w)` per ability (`w = --fusion_cv_weight`),
+  where the EEG score is rescaled so that the model's threshold = 0.5. It is
+  high only when both agree; without EEG it equals the camera. The best ability
+  above `--fusion_threshold` is shown as `PREDICTION`.
+* **UNITY** – what the gate actually decided for the current gesture (EEG score
+  since gesture start vs threshold, `waiting for EEG` / `ACTIVE` / `FIRED`).
+  The combined prediction is for display only and reacts sooner; events sent to
+  Unity still come from the gate and its anti-flicker rules.
+
+`--no_panel` restores the old in-image overlay.
 
 ## Options
 
@@ -76,6 +91,10 @@ spell's threshold (bar + white line) and `waiting for EEG` / `ACTIVE` / `FIRED`.
 | `--cv_grace` | `0.35` | camera drop-outs shorter than this are ignored |
 | `--cv_rejoin` | `1.0` | the same gesture returning within this after a longer drop-out continues the same gesture (EEG keeps adding up, Push does not fire twice) |
 | `--legacy_events` | – | old `gesture_started` / `gesture_ended` protocol, no EEG |
+| `--no_panel` | – | no prediction panel next to the preview |
+| `--fusion_cv_weight` | `0.5` | panel: camera weight in the combined score (0..1) |
+| `--fusion_threshold` | `0.5` | panel: minimum combined score for a prediction |
+| `--eeg_display_windows` | `4` | panel: EEG windows averaged for the EEG bars |
 
 ### Speed vs false activations
 
@@ -154,10 +173,12 @@ switch (e.@event) {
 | File | What |
 |---|---|
 | `spell_gate.py` | camera + EEG decision logic and anti-flicker (no hardware) |
+| `fusion.py` | continuous camera / EEG / combined prediction for the preview panel (no hardware) |
 | `headset.py` | BCI Core-8 / simulator via gpype, scoring windows, contact check |
 | `features.py` | filter + features, identical to training |
 | `models/live_models.joblib` | logistic regression per spell, thresholds, channel list |
 | `tests/test_spell_gate.py` | `python -m eeg.tests.test_spell_gate` – 13 logic tests |
+| `tests/test_fusion.py` | `python -m eeg.tests.test_fusion` – combined-prediction tests |
 | `tests/smoke_pipeline.py` | `python -m eeg.tests.smoke_pipeline` – whole pipeline, fake camera, gpype, TCP |
 | `tools/replay_recording.py` | `python -m eeg.tools.replay_recording rec.csv` – real EEG recording through the live path |
 

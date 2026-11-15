@@ -352,6 +352,10 @@ class GesturePrediction:
     raw_label: Optional[str] = None
     cooldown_remaining: float = 0.0
     held_active: Optional[bool] = None
+    # Pełny wektor prawdopodobieństw klasyfikatora dla bieżącej klatki
+    # (kolejność jak w ``labels``); ``None``, gdy klasyfikacji nie było
+    # (brak dłoni, strefa spoczynku, za mała różnica wysokości).
+    probabilities: Optional[List[float]] = None
 
     @property
     def active(self):
@@ -615,6 +619,7 @@ class TwoHandGestureClassifier(object):
             hand_sign_id=hand_sign_id,
             label=label,
             confidence=float(probabilities[hand_sign_id]),
+            probabilities=[float(p) for p in probabilities],
             both_hands_visible=both_hands_visible,
             height_threshold_met=height_threshold_met,
             classified=True,

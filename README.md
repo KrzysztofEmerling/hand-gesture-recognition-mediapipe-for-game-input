@@ -92,6 +92,8 @@ Additional pipeline options:
 | `--eeg_threshold_offset`, `--eeg_release` | `0.0`, `1.5` | stricter thresholds; seconds of lost imagination that end a held ability (`0` = only the gesture ends it) |
 | `--cv_stable`, `--cv_grace`, `--cv_rejoin` | `0.15`, `0.35`, `1.0` | camera anti-flicker: stable time to start a gesture, ignored drop-out length, re-joining a fragmented gesture |
 | `--legacy_events` | – | old `gesture_started` / `gesture_ended` protocol without EEG |
+| `--no_panel` | – | hide the prediction panel (CAMERA / EEG / COMBINED) next to the preview |
+| `--fusion_cv_weight`, `--fusion_threshold`, `--eeg_display_windows` | `0.5`, `0.5`, `4` | panel only: camera weight in the combined score, minimum combined score for a prediction, EEG windows averaged for the EEG bars |
 
 All EEG options are described in [`eeg/README.md`](eeg/README.md).
 

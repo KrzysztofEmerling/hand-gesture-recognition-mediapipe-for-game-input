@@ -53,7 +53,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from integrations.send_event import EventSender
 from eeg import ABILITIES, GateConfig, SpellGate
-from utils import draw_hand_centers, draw_rest_zone
+from eeg.fusion import EEGMonitor, FusionConfig, cv_ability_probs, fuse
+from utils import draw_hand_centers, draw_prediction_panel, draw_rest_zone
 from model import (
     DEFAULT_GESTURE_COOLDOWN,
     DEFAULT_HEIGHT_DIFF_THRESHOLD,
@@ -304,6 +305,7 @@ class AbilityBridge:
         min_confidence: float = 0.0,
         inactive_label: str = INACTIVE_GESTURE_LABEL,
         verbose: bool = False,
+        fusion: Optional[FusionConfig] = None,
     ) -> None:
         self.sender = sender
         self.gate = gate
@@ -313,12 +315,19 @@ class AbilityBridge:
         self.verbose = verbose
         self.status = None
         self._last_status_text = None
+        self.eeg_available = eeg_stream is None
+        # Ciągła predykcja EEG do wizualizacji (niezależna od bieżącego gestu).
+        self.fusion = fusion or FusionConfig()
+        self.monitor = EEGMonitor({spell: gate.threshold(spell) for spell, _ in ABILITIES.values()},
+                                  n_windows=self.fusion.eeg_windows, stale_s=self.fusion.eeg_stale_s)
 
     def update(self, prediction: GesturePrediction) -> list:
         now = time.monotonic()
         eeg_available = True
         if self.eeg is not None:
-            self.gate.add_windows(self.eeg.poll())
+            windows = self.eeg.poll()
+            self.gate.add_windows(windows)
+            self.monitor.add_windows(windows)
             self.status = self.eeg.status()
             eeg_available = self.status.available
             text = self.status.text()
@@ -332,11 +341,22 @@ class AbilityBridge:
                 and prediction.confidence >= self.min_confidence):
             label = prediction.label
 
+        self.eeg_available = eeg_available
         events = self.gate.update(now, label, prediction.confidence, eeg_available)
         for event in events:
             self.sender.send_json(event)
             self._log(event)
         return events
+
+    def fused_prediction(self, prediction: GesturePrediction, labels):
+        """Kamera + EEG -> :class:`eeg.fusion.FusedPrediction` (tylko wizualizacja)."""
+        cv = cv_ability_probs(labels, prediction.probabilities)
+        if self.eeg is None:                                  # --eeg off
+            return fuse(cv, {}, self.monitor.ability_thresholds(), eeg_available=False,
+                        config=self.fusion)
+        return fuse(cv, self.monitor.scores(time.monotonic()), self.monitor.ability_thresholds(),
+                    eeg_available=self.eeg_available, config=self.fusion,
+                    eeg_artifact=self.monitor.last_artifact)
 
     def close(self) -> None:
         for event in self.gate.close(time.monotonic()):
@@ -448,6 +468,17 @@ def get_args(argv=None):
                         help="ten sam gest wraca w ciągu tylu s po dłuższej "
                              "przerwie = ten sam gest (EEG się sumuje, Push nie "
                              "odpala drugi raz)")
+    fusion_defaults = FusionConfig()
+    parser.add_argument("--fusion_cv_weight", type=float, default=fusion_defaults.cv_weight,
+                        help="waga kamery w predykcji łączonej na panelu (0..1; "
+                             "wynik = cv^w * eeg^(1-w))")
+    parser.add_argument("--fusion_threshold", type=float,
+                        default=fusion_defaults.decision_threshold,
+                        help="min. wynik łączny, by panel wskazał umiejętność")
+    parser.add_argument("--eeg_display_windows", type=int, default=fusion_defaults.eeg_windows,
+                        help="panel EEG: średnia z ostatnich N okien (co 0.25 s)")
+    parser.add_argument("--no_panel", action="store_true",
+                        help="bez panelu predykcji (kamera | EEG | łącznie) obok obrazu")
     parser.add_argument("--legacy_events", action="store_true",
                         help="stary protokół gesture_started/gesture_ended (bez EEG)")
 
@@ -529,7 +560,9 @@ def run_camera(args) -> None:
                 draw_rest_zone(image, pipeline.rest_zone, prediction)
                 draw_hand_centers(image, prediction)
                 draw_status(image, prediction)
-                if isinstance(bridge, AbilityBridge):
+                if not args.no_panel:
+                    image = draw_panel(image, prediction, pipeline.labels, bridge, args)
+                elif isinstance(bridge, AbilityBridge):
                     draw_ability_status(image, bridge)
                 cv.imshow("Gesture Pipeline", image)
                 key = cv.waitKey(1) & 0xFF
@@ -582,9 +615,28 @@ def make_bridge(args, sender, inactive_label):
             ", ".join("{} {:.2f}".format(k, v) for k, v in thresholds.items())))
     gate = SpellGate(thresholds, config, mode="cv_only" if eeg_stream is None else "eeg",
                      fallback=args.eeg_fallback)
+    fusion = FusionConfig(eeg_windows=args.eeg_display_windows, cv_weight=args.fusion_cv_weight,
+                          decision_threshold=args.fusion_threshold)
     bridge = AbilityBridge(sender, gate, eeg_stream, min_confidence=args.min_gesture_confidence,
-                           inactive_label=inactive_label, verbose=verbose)
+                           inactive_label=inactive_label, verbose=verbose, fusion=fusion)
     return bridge, eeg_stream
+
+
+def draw_panel(image, prediction, labels, bridge, args):
+    """Dokleja z prawej panel: predykcja z kamery, z EEG i łączna (+ decyzja bramki)."""
+    if isinstance(bridge, AbilityBridge):
+        return draw_prediction_panel(
+            image, prediction, labels,
+            fused=bridge.fused_prediction(prediction, labels),
+            eeg_status=bridge.status, eeg_mode=args.eeg, gate_view=bridge.gate.view(),
+            cv_weight=bridge.fusion.cv_weight, decision_threshold=bridge.fusion.decision_threshold)
+    # --legacy_events: sama kamera
+    fusion = FusionConfig(cv_weight=args.fusion_cv_weight, decision_threshold=args.fusion_threshold)
+    fused = fuse(cv_ability_probs(labels, prediction.probabilities), {}, {},
+                 eeg_available=False, config=fusion)
+    return draw_prediction_panel(image, prediction, labels, fused=fused, eeg_mode="off",
+                                 cv_weight=fusion.cv_weight,
+                                 decision_threshold=fusion.decision_threshold)
 
 
 def draw_ability_status(image, bridge: "AbilityBridge") -> None:
