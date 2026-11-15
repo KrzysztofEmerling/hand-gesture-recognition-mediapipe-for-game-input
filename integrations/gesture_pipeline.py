@@ -9,7 +9,8 @@ Pipeline:
 3. składa landmarki obu dłoni i klasyfikuje gest przez
    :class:`model.keypoint_classifier.keypoint_classifier.TwoHandGestureClassifier`
    (wspólny próg ``height_diff_threshold`` i strefa spoczynku
-   ``RestZone`` z ``app.py``),
+   ``RestZone`` z ``app.py`` oraz blokada zmiany gestu
+   ``gesture_cooldown``),
 4. wysyła zdarzenia ``gesture_started`` / ``gesture_ended`` do Unity przez
    :class:`integrations.event_sender.EventSender` (importowanego przez
    ``integrations/send_event.py``).
@@ -43,6 +44,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from integrations.send_event import EventSender  
 from utils import draw_hand_centers, draw_rest_zone
 from model import (
+    DEFAULT_GESTURE_COOLDOWN,
     DEFAULT_HEIGHT_DIFF_THRESHOLD,
     DEFAULT_REST_ZONE_RADIUS,
     DEFAULT_REST_ZONE_Y_OFFSET,
@@ -106,6 +108,7 @@ class GesturePipeline:
         height_diff_threshold=DEFAULT_HEIGHT_DIFF_THRESHOLD,
         rest_zone_radius=DEFAULT_REST_ZONE_RADIUS,
         rest_zone_y_offset=DEFAULT_REST_ZONE_Y_OFFSET,
+        gesture_cooldown=DEFAULT_GESTURE_COOLDOWN,
         min_detection_confidence=0.7,
         min_tracking_confidence=0.5,
         num_hands=NUM_HANDS,
@@ -130,6 +133,7 @@ class GesturePipeline:
             inactive_label=self.inactive_label,
             height_diff_threshold=height_diff_threshold,
             rest_zone=self.rest_zone,
+            gesture_cooldown=gesture_cooldown,
         )
 
         num_hands = max(int(num_hands), NUM_HANDS)
@@ -325,6 +329,11 @@ def get_args(argv=None):
                         default=DEFAULT_REST_ZONE_Y_OFFSET,
                         help="o ile px PONIŻEJ dolnej krawędzi obrazu leży "
                              "środek okręgu strefy spoczynku")
+    parser.add_argument("--gesture_cooldown", type=float,
+                        default=DEFAULT_GESTURE_COOLDOWN,
+                        help="minimalny czas (s) między zmianami gestu; nowy "
+                             "gest jest ignorowany, dopóki nie minie "
+                             "(eliminuje migotanie, 0 = wyłączone)")
     parser.add_argument("--min_gesture_confidence", type=float, default=0.0,
                         help="minimalna pewność, aby wysłać gest do Unity")
 
@@ -349,6 +358,7 @@ def run_camera(args) -> None:
         height_diff_threshold=args.height_diff_threshold,
         rest_zone_radius=args.rest_zone_radius,
         rest_zone_y_offset=args.rest_zone_y_offset,
+        gesture_cooldown=args.gesture_cooldown,
         min_detection_confidence=args.min_detection_confidence,
         min_tracking_confidence=args.min_tracking_confidence,
         num_hands=args.num_hands,
@@ -424,7 +434,10 @@ def run_camera(args) -> None:
 def draw_status(image, prediction: GesturePrediction) -> None:
     color = (0, 255, 0) if prediction.active else (0, 165, 255)
     gesture_text = "GESTURE: {}".format(prediction.label)
-    if prediction.in_rest_zone:
+    if prediction.held:
+        gesture_text += "  HOLD {:.1f}s (next: {})".format(
+            prediction.cooldown_remaining, prediction.raw_label)
+    elif prediction.in_rest_zone:
         gesture_text += " (rest zone)"
 
     cv.putText(image, gesture_text, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.9,

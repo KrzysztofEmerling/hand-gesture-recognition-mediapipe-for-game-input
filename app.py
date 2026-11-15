@@ -14,6 +14,7 @@ from mediapipe.tasks.python import vision
 
 from utils import CvFpsCalc, draw_hand_centers, draw_rest_zone
 from model import (
+    DEFAULT_GESTURE_COOLDOWN,
     DEFAULT_HEIGHT_DIFF_THRESHOLD,
     DEFAULT_REST_ZONE_RADIUS,
     DEFAULT_REST_ZONE_Y_OFFSET,
@@ -82,6 +83,12 @@ def get_args():
                              'the rest zone circle center lies',
                         type=int,
                         default=DEFAULT_REST_ZONE_Y_OFFSET)
+    parser.add_argument("--gesture_cooldown",
+                        help='min time (s) between two gesture changes; a new '
+                             'gesture is ignored until it elapses (removes '
+                             'gesture flickering, 0 = disabled)',
+                        type=float,
+                        default=DEFAULT_GESTURE_COOLDOWN)
     parser.add_argument("--min_tracking_confidence",
                         help='min_tracking_confidence',
                         type=float,
@@ -170,6 +177,7 @@ def main():
         inactive_label=inactive_label,
         height_diff_threshold=height_diff_threshold,
         rest_zone=rest_zone,
+        gesture_cooldown=args.gesture_cooldown,
     )
 
     # FPS Measurement ########################################################
@@ -301,7 +309,8 @@ def main():
                 hand.handedness,
                 hand_sign_text
                 if prediction.classified
-                and prediction.height_threshold_met else '',
+                and (prediction.held or prediction.height_threshold_met)
+                else '',
             )
         debug_image = draw_hand_centers(debug_image, prediction)
 
@@ -318,7 +327,11 @@ def main():
                                 height_diff=prediction.height_diff,
                                 height_threshold=prediction.height_diff_threshold,
                                 height_threshold_met=prediction.height_threshold_met,
-                                in_rest_zone=prediction.in_rest_zone)
+                                in_rest_zone=prediction.in_rest_zone,
+                                gesture_active=prediction.active,
+                                held_label=(prediction.raw_label
+                                            if prediction.held else None),
+                                cooldown_remaining=prediction.cooldown_remaining)
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -509,7 +522,8 @@ def draw_info(image, fps, mode, number, category, captured_count, just_saved,
               capture_pending, gesture_text, missing_hand, both_hands_visible,
               category_labels=None, hand_heights=None, height_diff=0.0,
               height_threshold=0, height_threshold_met=True,
-              in_rest_zone=False):
+              in_rest_zone=False, gesture_active=None, held_label=None,
+              cooldown_remaining=0.0):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
@@ -558,15 +572,28 @@ def draw_info(image, fps, mode, number, category, captured_count, just_saved,
 
     # Recognized gesture (both hands combined into one sample)
     gesture_line = "GESTURE:" + gesture_text
-    if in_rest_zone:
+    if in_rest_zone and held_label is None:
         gesture_line += " (rest zone)"
+    if gesture_active is None:
+        gesture_active = (both_hands_visible and height_threshold_met
+                          and not in_rest_zone)
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
                (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, gesture_line, (10, 175), cv.FONT_HERSHEY_SIMPLEX, 0.9,
-               (0, 255, 0) if both_hands_visible and height_threshold_met
-               and not in_rest_zone
-               else (0, 165, 255), 2,
+               (0, 255, 0) if gesture_active else (0, 165, 255), 2,
                cv.LINE_AA)
+
+    # Gesture change blocked by --gesture_cooldown
+    if held_label is not None:
+        hold_text = "HOLD {:.1f}s (next: {})".format(cooldown_remaining,
+                                                    held_label)
+        (gesture_w, _), _ = cv.getTextSize(gesture_line,
+                                           cv.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+        hold_org = (10 + gesture_w + 15, 175)
+        cv.putText(image, hold_text, hold_org, cv.FONT_HERSHEY_SIMPLEX, 0.6,
+                   (0, 0, 0), 4, cv.LINE_AA)
+        cv.putText(image, hold_text, hold_org, cv.FONT_HERSHEY_SIMPLEX, 0.6,
+                   (255, 255, 0), 1, cv.LINE_AA)
 
     # Capture status
     if just_saved:

@@ -10,13 +10,16 @@ Moduł zawiera:
   landmarki obu dłoni w jeden wektor cech i pilnuje progu pionowego
   rozstawienia dłoni (``height_diff_threshold``) oraz strefy spoczynku
   (``RestZone``) - gdy obie dłonie leżą w półokręgu przy dolnej krawędzi
-  obrazu, gest jest traktowany jako ``inactive``.
+  obrazu, gest jest traktowany jako ``inactive``. Dodatkowo po każdej
+  zmianie gestu kolejna zmiana jest możliwa dopiero po
+  ``gesture_cooldown`` sekundach (eliminuje migotanie gestów).
 """
 
 import csv
 import math
 import os
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -38,6 +41,11 @@ DEFAULT_HEIGHT_DIFF_THRESHOLD = 60
 # Promień 0 wyłącza strefę.
 DEFAULT_REST_ZONE_RADIUS = 300
 DEFAULT_REST_ZONE_Y_OFFSET = 120
+
+# Minimalny czas (s) między kolejnymi zmianami rozpoznanego gestu.
+# Po zmianie gestu nowy wynik klasyfikacji jest ignorowany, dopóki nie
+# minie ten czas - eliminuje to migotanie różnych gestów. 0 = wyłączone.
+DEFAULT_GESTURE_COOLDOWN = 0.4
 
 INACTIVE_GESTURE_LABEL = 'inactive'
 CLASSIFICATION_OFF_LABEL = 'classification off'
@@ -330,10 +338,20 @@ class GesturePrediction:
     # (w kolejności ``hands``).
     in_rest_zone: bool = False
     hands_in_rest_zone: List[bool] = field(default_factory=list)
+    # Blokada zmiany gestu (``gesture_cooldown``):
+    # ``held`` = True, gdy zwracany jest poprzedni gest, bo nie minął
+    # jeszcze czas blokady; ``raw_label`` to wynik bieżącej klatki,
+    # ``cooldown_remaining`` - ile sekund blokady zostało.
+    held: bool = False
+    raw_label: Optional[str] = None
+    cooldown_remaining: float = 0.0
+    held_active: Optional[bool] = None
 
     @property
     def active(self):
         """True tylko dla rozpoznanego, aktywnego gestu (nie ``inactive``)."""
+        if self.held_active is not None:
+            return self.held_active
         return (self.classified and self.height_threshold_met
                 and not self.is_inactive)
 
@@ -355,6 +373,11 @@ class TwoHandGestureClassifier(object):
         :class:`RestZone` - gdy obie dłonie są w strefie jednocześnie,
         gest jest ``inactive``. ``None`` = strefa domyślna; aby wyłączyć,
         podaj ``RestZone(radius=0)``.
+    gesture_cooldown:
+        Minimalny czas (s) między kolejnymi zmianami gestu. Po zmianie
+        gestu przez ten czas zwracany jest poprzedni gest, nawet jeśli
+        klasyfikator wskazuje inny. Wyjście z ``inactive`` jest zawsze
+        natychmiastowe. ``0`` wyłącza blokadę.
     """
 
     def __init__(
@@ -364,8 +387,12 @@ class TwoHandGestureClassifier(object):
         inactive_label=None,
         height_diff_threshold=DEFAULT_HEIGHT_DIFF_THRESHOLD,
         rest_zone=None,
+        gesture_cooldown=DEFAULT_GESTURE_COOLDOWN,
     ):
         self.classifier = classifier
+        self.gesture_cooldown = max(0.0, float(gesture_cooldown))
+        self._held_prediction = None
+        self._held_since = 0.0
         self.rest_zone = rest_zone if rest_zone is not None else RestZone()
         self.labels = list(labels) if labels is not None else []
 
@@ -458,8 +485,59 @@ class TwoHandGestureClassifier(object):
             hands_in_rest_zone=list(hands_in_rest_zone or []),
         )
 
-    def classify(self, hands, height_diff_threshold=None):
-        """Klasyfikuje gest z listy obiektów :class:`HandSample`."""
+    def reset(self):
+        """Czyści stan blokady gestu (np. po restarcie kamery)."""
+        self._held_prediction = None
+        self._held_since = 0.0
+
+    def classify(self, hands, height_diff_threshold=None, timestamp=None):
+        """Klasyfikuje gest z listy obiektów :class:`HandSample`.
+
+        ``timestamp`` - czas klatki w sekundach (domyślnie
+        ``time.monotonic()``), używany przez blokadę ``gesture_cooldown``.
+        """
+        now = time.monotonic() if timestamp is None else float(timestamp)
+        raw = self._classify_raw(hands, height_diff_threshold)
+        return self._apply_cooldown(raw, now)
+
+    def _apply_cooldown(self, raw, now):
+        """Pozwala zmienić gest dopiero po ``gesture_cooldown`` sekundach."""
+        held = self._held_prediction
+        raw.raw_label = raw.label
+
+        if held is None or raw.label == held.label:
+            if held is None:
+                self._held_since = now
+            self._held_prediction = raw
+            return raw
+
+        elapsed = now - self._held_since
+        # Wyjście z ``inactive`` (lub braku gestu) jest natychmiastowe -
+        # blokada dotyczy tylko zmiany z aktywnego gestu na inny.
+        if (not held.active or self.gesture_cooldown <= 0
+                or elapsed >= self.gesture_cooldown):
+            # Zmiana gestu dozwolona - start nowego okresu blokady.
+            self._held_prediction = raw
+            self._held_since = now
+            return raw
+
+        # Za wcześnie na zmianę: zwróć poprzedni gest z danymi bieżącej
+        # klatki (dłonie, cechy, odległości).
+        return replace(
+            raw,
+            hand_sign_id=held.hand_sign_id,
+            label=held.label,
+            confidence=held.confidence,
+            classified=held.classified,
+            is_inactive=held.is_inactive,
+            held=True,
+            raw_label=raw.label,
+            cooldown_remaining=self.gesture_cooldown - elapsed,
+            held_active=held.active,
+        )
+
+    def _classify_raw(self, hands, height_diff_threshold=None):
+        """Klasyfikacja pojedynczej klatki, bez blokady zmiany gestu."""
         threshold = (self.height_diff_threshold
                      if height_diff_threshold is None
                      else int(height_diff_threshold))
