@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from integrations.send_event import EventSender
 from eeg import ABILITIES, GateConfig, SpellGate
 from eeg.fusion import EEGMonitor, FusionConfig, cv_ability_probs, fuse
+from eeg.instant_check import InstantEEGCheck
 from utils import draw_hand_centers, draw_prediction_panel, draw_rest_zone
 from model import (
     DEFAULT_GESTURE_COOLDOWN,
@@ -346,6 +347,10 @@ class AbilityBridge:
         for event in events:
             self.sender.send_json(event)
             self._log(event)
+        if isinstance(self.gate, InstantEEGCheck):          # --decision instant
+            for decision in self.gate.pop_decisions():
+                if decision["event"] == "ignored":
+                    self._log_ignored(decision)
         return events
 
     def fused_prediction(self, prediction: GesturePrediction, labels):
@@ -362,6 +367,14 @@ class AbilityBridge:
         for event in self.gate.close(time.monotonic()):
             self.sender.send_json(event)
             self._log(event)
+
+    @staticmethod
+    def _log_ignored(decision: dict) -> None:
+        reason = {"below_threshold": "EEG {} < próg {}".format(decision.get("eeg_score"),
+                                                               decision.get("eeg_threshold")),
+                  "no_eeg_data": "brak świeżych danych EEG",
+                  "eeg_unavailable": "EEG niedostępne"}.get(decision["reason"], decision["reason"])
+        print("[EEG check] {} zignorowany - {}".format(decision["ability"], reason))
 
     def _log(self, event: dict) -> None:
         if self.verbose:
@@ -479,6 +492,14 @@ def get_args(argv=None):
                         help="panel EEG: średnia z ostatnich N okien (co 0.25 s)")
     parser.add_argument("--no_panel", action="store_true",
                         help="bez panelu predykcji (kamera | EEG | łącznie) obok obrazu")
+    parser.add_argument("--decision", choices=("gate", "instant"), default="gate",
+                        help="gate = SpellGate (czeka na okna EEG z czasu gestu); "
+                             "instant = w chwili wykrycia ruchu z kamery porównaj bieżący "
+                             "wynik regresji EEG tego ruchu z progiem: powyżej -> TCP, "
+                             "poniżej -> ignoruj (default: %(default)s)")
+    parser.add_argument("--eeg_check_windows", type=int, default=4,
+                        help="--decision instant: średnia z ostatnich N okien EEG "
+                             "(co 0.25 s) w chwili wykrycia ruchu")
     parser.add_argument("--legacy_events", action="store_true",
                         help="stary protokół gesture_started/gesture_ended (bez EEG)")
 
@@ -613,8 +634,14 @@ def make_bridge(args, sender, inactive_label):
         thresholds = eeg_stream.thresholds
         print("[gesture_pipeline] EEG działa; progi: {}".format(
             ", ".join("{} {:.2f}".format(k, v) for k, v in thresholds.items())))
-    gate = SpellGate(thresholds, config, mode="cv_only" if eeg_stream is None else "eeg",
-                     fallback=args.eeg_fallback)
+    gate_mode = "cv_only" if eeg_stream is None else "eeg"
+    if args.decision == "instant":
+        gate = InstantEEGCheck(thresholds, config, mode=gate_mode, fallback=args.eeg_fallback,
+                               n_windows=args.eeg_check_windows)
+        print("[gesture_pipeline] Decyzja: instant - wynik EEG ruchu sprawdzany w chwili "
+              "wykrycia ({} okien).".format(args.eeg_check_windows))
+    else:
+        gate = SpellGate(thresholds, config, mode=gate_mode, fallback=args.eeg_fallback)
     fusion = FusionConfig(eeg_windows=args.eeg_display_windows, cv_weight=args.fusion_cv_weight,
                           decision_threshold=args.fusion_threshold)
     bridge = AbilityBridge(sender, gate, eeg_stream, min_confidence=args.min_gesture_confidence,
@@ -657,6 +684,7 @@ def draw_ability_status(image, bridge: "AbilityBridge") -> None:
             score = view["score"]
             state = ("ACTIVE" if view["active"] else
                      "FIRED" if view["triggered"] else
+                     "IGNORED" if view.get("rejected") else
                      "waiting for EEG" if view["gesture_on"] else "-")
             lines.append(("{}: EEG {} / {:.2f}  ({} win)  {}".format(
                 view["ability"], "--" if score is None else "{:.2f}".format(score),

@@ -101,6 +101,11 @@ class EEGMonitor:
             out[ability] = sum(ps) / len(ps) if ps else None
         return out
 
+    def count(self, now: float) -> int:
+        """Liczba świeżych okien (bez artefaktów), z których liczony jest wynik."""
+        fresh = self.last_t_end is not None and now - self.last_t_end <= self.stale_s
+        return len(self._windows) if fresh else 0
+
     def ability_thresholds(self) -> Dict[str, float]:
         return {a: self.thresholds.get(spell, 0.5) for a, (spell, _) in ABILITIES.items()}
 

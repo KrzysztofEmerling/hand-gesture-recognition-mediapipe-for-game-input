@@ -90,6 +90,8 @@ A panel to the right of the camera preview shows three predictions side by side:
 | `--cv_stable` | `0.15` | s a camera gesture must be stable before it counts |
 | `--cv_grace` | `0.35` | camera drop-outs shorter than this are ignored |
 | `--cv_rejoin` | `1.0` | the same gesture returning within this after a longer drop-out continues the same gesture (EEG keeps adding up, Push does not fire twice) |
+| `--decision` | `gate` | `gate` = `SpellGate` (below); `instant` = `InstantEEGCheck`, see *Instant check* |
+| `--eeg_check_windows` | `4` | `--decision instant`: windows averaged at the moment of detection |
 | `--legacy_events` | – | old `gesture_started` / `gesture_ended` protocol, no EEG |
 | `--no_panel` | – | no prediction panel next to the preview |
 | `--fusion_cv_weight` | `0.5` | panel: camera weight in the combined score (0..1) |
@@ -106,6 +108,27 @@ real EEG; these sessions trained the models, so real-world rates will be worse):
 | 4 | 1.9 s | 40/45 | 8/45 | 2 | 1.5 s | 24/25 | 6/25 |
 | **6 (default)** | **2.4 s** | **40/45** | **4/45** | **3 (default)** | **1.7 s** | **23/25** | **5/25** |
 | 8 | 2.9 s | 40/45 | 3/45 | 4 | 2.0 s | 23/25 | 4/25 |
+
+## Instant check (`--decision instant`)
+
+`eeg/instant_check.py` – an alternative to the gate, one decision per gesture:
+
+1. the camera detects a movement (stable for `--cv_stable` s; drop-outs shorter
+   than `--cv_grace` s are ignored),
+2. at that moment the logistic-regression score of **that** movement is taken:
+   the mean P(imagination) of the last `--eeg_check_windows` EEG windows
+   (thresholds include `--eeg_threshold_offset`),
+3. score ≥ threshold → the TCP event is sent (`ability_triggered` for Push,
+   `ability_started` … `ability_ended` for held abilities, ended when the
+   gesture is released); score < threshold → the movement is ignored until the
+   gesture ends and the console prints `[EEG check] Choke zignorowany - EEG 0.32 < próg 0.55`.
+
+No EEG data / electrode off: ignored (`--eeg_fallback block`) or sent
+(`--eeg_fallback cv`). Events carry `"decision": "instant"`. It reacts right
+away (≈ `--cv_stable` after the gesture starts) but judges the EEG from just
+before the detection, so the imagination has to start together with (or
+before) the movement. `--eeg_min_windows*`, `--eeg_release` and `--cv_rejoin`
+do not apply. The panel shows `UNITY: <ability> IGNORED (below threshold)`.
 
 ## Anti-flicker (what keeps abilities from blinking)
 
@@ -173,11 +196,13 @@ switch (e.@event) {
 | File | What |
 |---|---|
 | `spell_gate.py` | camera + EEG decision logic and anti-flicker (no hardware) |
+| `instant_check.py` | `--decision instant`: EEG score checked once when the camera detects a movement (no hardware) |
 | `fusion.py` | continuous camera / EEG / combined prediction for the preview panel (no hardware) |
 | `headset.py` | BCI Core-8 / simulator via gpype, scoring windows, contact check |
 | `features.py` | filter + features, identical to training |
 | `models/live_models.joblib` | logistic regression per spell, thresholds, channel list |
 | `tests/test_spell_gate.py` | `python -m eeg.tests.test_spell_gate` – 13 logic tests |
+| `tests/test_instant_check.py` | `python -m eeg.tests.test_instant_check` – instant-check tests |
 | `tests/test_fusion.py` | `python -m eeg.tests.test_fusion` – combined-prediction tests |
 | `tests/smoke_pipeline.py` | `python -m eeg.tests.smoke_pipeline` – whole pipeline, fake camera, gpype, TCP |
 | `tools/replay_recording.py` | `python -m eeg.tools.replay_recording rec.csv` – real EEG recording through the live path |
