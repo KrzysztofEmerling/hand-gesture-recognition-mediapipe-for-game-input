@@ -74,10 +74,16 @@ class KeyPointClassifier(object):
         model_path='model/keypoint_classifier/keypoint_classifier.tflite',
         num_threads=1,
     ):
-        import tensorflow as tf
+        try:
+            import tensorflow as tf
+            Interpreter = tf.lite.Interpreter
+        except ImportError:
+            # Lightweight TFLite runtime (pip install ai-edge-litert) - enough
+            # for the .tflite classifier, no full TensorFlow needed.
+            from ai_edge_litert.interpreter import Interpreter
 
-        self.interpreter = tf.lite.Interpreter(model_path=model_path,
-                                               num_threads=num_threads)
+        self.interpreter = Interpreter(model_path=model_path,
+                                       num_threads=num_threads)
 
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()

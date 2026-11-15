@@ -15,6 +15,7 @@ This project is a fork of [hand-gesture-recognition-mediapipe](https://github.co
 - **Unity integration over TCP** (`integrations/` folder) – the pipeline turns classification results into `gesture_started` and `gesture_ended` events and sends them as JSON.
 - **Running from a notebook** (`integrations/run_pipeline.ipynb`) and a local test server (`integrations/test_server.py`).
 - **MediaPipe Tasks hand model** (`hand_landmarker.task`) instead of the legacy `mp.solutions` API.
+- **EEG gating** (`eeg/` folder) – a g.tec BCI Core-8 headset checks that the player also *imagines* the spell. An ability fires only for gesture **+** imagination, and Unity receives only ability events: `ability_triggered` (Push) and `ability_started` / `ability_ended` (Heal, Choke, Lightning – they last while the gesture is held). Camera and EEG flicker are filtered out. Details: [`eeg/README.md`](eeg/README.md).
 
 ## Requirements
 
@@ -35,7 +36,10 @@ source .venv/bin/activate
 .venv\Scripts\activate
 
 pip install -r requirements.txt
+pip install -r eeg/requirements-eeg.txt   # EEG headset (skip if you only use --eeg off)
 ```
+
+Without full TensorFlow the `.tflite` classifier runs on the lightweight `ai-edge-litert` runtime (picked automatically).
 ## Usage
 
 ### Gesture preview without Unity
@@ -82,6 +86,14 @@ Additional pipeline options:
 | `--max_frames` | `0` | stop after N frames (`0` = unlimited) |
 | `--dry_run` | – | do not connect to Unity, print events to the console |
 | `--verbose` | – | extra logging |
+| `--eeg` | `headset` | `headset` (BCI Core-8), `sim` (random signal, plumbing test), `off` (camera only) |
+| `--eeg_fallback` | `block` | when the EEG has no data / an electrode is off: `block` abilities or use the camera only (`cv`) |
+| `--eeg_min_windows`, `--eeg_min_windows_push` | `6`, `3` | EEG evidence needed before a held ability starts / Push fires (more = fewer false activations, slower) |
+| `--eeg_threshold_offset`, `--eeg_release` | `0.0`, `1.5` | stricter thresholds; seconds of lost imagination that end a held ability (`0` = only the gesture ends it) |
+| `--cv_stable`, `--cv_grace`, `--cv_rejoin` | `0.15`, `0.35`, `1.0` | camera anti-flicker: stable time to start a gesture, ignored drop-out length, re-joining a fragmented gesture |
+| `--legacy_events` | – | old `gesture_started` / `gesture_ended` protocol without EEG |
+
+All EEG options are described in [`eeg/README.md`](eeg/README.md).
 
 The remaining options (`--device`, `--width`, `--height`, `--model_path`, `--classifier_path`, `--labels_path`, `--num_hands`, confidence thresholds) work the same as in `app.py`. Press **ESC** to close the preview window.
 
@@ -101,14 +113,28 @@ In another, run the pipeline (with a camera) or send a single event:
 
 ```bash
 python integrations/gesture_pipeline.py
-python integrations/send_event.py gesture_started --gesture Push --confidence 0.92
+python integrations/send_event.py ability_triggered --ability Push
 ```
 
-To check recognition alone, without any server, use `--dry_run`.
+To check recognition alone, without any server, use `--dry_run`. Tests for the EEG part: `python -m eeg.tests.test_spell_gate` and `python -m eeg.tests.smoke_pipeline`.
 
 ## TCP protocol
 
 Each event is **one line of JSON terminated with `\n`** (UTF-8). The client connects to the server in Unity and tries to reconnect if the connection drops.
+
+Only ability events are sent – camera gesture **and** EEG imagination together:
+
+```json
+{"event": "ability_triggered", "timestamp": 1794710658.909, "ability": "Push", "kind": "instant", "mode": "eeg", "cv_confidence": 0.95, "since_gesture_start": 1.72, "eeg_score": 0.71, "eeg_threshold": 0.56, "eeg_windows": 3}
+{"event": "ability_started", "timestamp": 1794710652.249, "ability": "Choke", "kind": "sustained", "mode": "eeg", "cv_confidence": 0.95, "since_gesture_start": 2.41, "eeg_score": 0.66, "eeg_threshold": 0.58, "eeg_windows": 6}
+{"event": "ability_ended", "timestamp": 1794710656.416, "ability": "Choke", "kind": "sustained", "mode": "eeg", "cv_confidence": 0.95, "since_gesture_start": 4.34, "reason": "gesture_released", "duration": 1.9}
+```
+
+`Push` is `instant` (one `ability_triggered` per gesture). `Heal`, `Choke` and `Lightning` are `sustained`: `ability_started` when the EEG confirms, `ability_ended` when the gesture ends (`reason: gesture_released`), the imagination fades (`imagination_lost`) or the pipeline stops (`shutdown`). Every `ability_started` gets exactly one `ability_ended`. Field reference and a C# example: [`eeg/README.md`](eeg/README.md#tcp-events).
+
+### Legacy protocol (`--legacy_events`)
+
+Camera only, the previous events:
 
 Gesture start:
 
@@ -151,6 +177,9 @@ Training data goes to `model/keypoint_classifier/keypoint.csv`. The first column
 - **`Unity niedostępne` (Unity unavailable)** – no TCP server is listening on the given host and port. The pipeline keeps running and retries the connection when sending gestures. Use `integrations/test_server.py` for testing.
 - **Gestures are always `inactive`** – lower `--height_diff_threshold` (or set it to `0`) and make sure both hands are visible in the frame.
 - **Cannot open the camera** – change `--device` (e.g. to `1`).
+- **`EEG: NO DATA`** – headset off, discharged, or still connected to another program (close other g.tec / gpype apps). Abilities are blocked meanwhile (`--eeg_fallback cv` = camera only).
+- **`EEG: Cz not touching`** (any electrode name) – that electrode has no scalp contact: add gel / press it through the hair. If it is one of Fz, Cz, C4, PO7, POz, PO8, abilities are blocked until it is fixed.
+- **Gesture shown but the ability never fires** – the preview shows `waiting for EEG` and the score below the white threshold line: the imagination was not detected. `--eeg_threshold_offset -0.05` loosens it; `--eeg off` tests the game without EEG.
 
 ## License
 

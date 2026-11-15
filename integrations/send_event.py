@@ -5,7 +5,8 @@
 Moduł jest cienką fasadą nad :class:`integrations.event_sender.EventSender`.
 Można go użyć dwojako:
 
-Przykład durzycia: python integrations/send_event.py gesture_started Push --confidence 0.92
+Przykład użycia: python integrations/send_event.py ability_triggered --ability Push
+                 python integrations/send_event.py gesture_started --gesture Push --confidence 0.92
 """
 
 from __future__ import annotations
@@ -57,11 +58,19 @@ def main(argv=None) -> int:
         description="Wyślij pojedyncze zdarzenie do Unity przez TCP.")
     parser.add_argument("event", help="np. gesture_started / gesture_ended")
     parser.add_argument("--gesture", default=None)
+    parser.add_argument("--ability", default=None,
+                        help="dla zdarzeń ability_*: Push / Heal / Choke / Lightning")
     parser.add_argument("--confidence", type=float, default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5555)
 
     args = parser.parse_args(argv)
+
+    extra = {}
+    if args.ability is not None:
+        extra["ability"] = args.ability
+        extra["kind"] = "instant" if args.ability == "Push" else "sustained"
+        extra["mode"] = "manual"
 
     sent = send_event(
         event=args.event,
@@ -69,6 +78,7 @@ def main(argv=None) -> int:
         confidence=args.confidence,
         host=args.host,
         port=args.port,
+        **extra,
     )
 
     return 0 if sent else 1
